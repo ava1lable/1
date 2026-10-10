@@ -1,0 +1,38 @@
+name: Build unsigned MirrorGoodGood IPA
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'patches/**'
+      - 'build.py'
+      - 'tests/**'
+      - '.github/workflows/build-ios.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify packaging protections
+        run: python3 -m unittest discover -s tests -v
+      - name: Build unsigned WDA and Photos component
+        run: python3 build.py
+      - name: Upload IPA and checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: MirrorGoodGood-WDA-Photos-unsigned
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: xcode-build-diagnostics
+          path: build/xcode-build.log
+          if-no-files-found: ignore
+          retention-days: 7

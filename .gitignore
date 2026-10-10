@@ -1,0 +1,6 @@
+build/
+artifacts/
+__pycache__/
+*.mobileprovision
+*.p12
+*.key
