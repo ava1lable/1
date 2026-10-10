@@ -118,7 +118,11 @@ def package_app(app, output):
     if data.get('CFBundleSupportedPlatforms') != ['iPhoneOS']:
         raise RuntimeError('Only a real-device iPhoneOS build may be packaged')
     data.update(NSPhotoLibraryAddUsageDescription=PHOTO_USAGE, CFBundleDisplayName='镜好好组件',
-                JHHPhotoAPIVersion=1, JHHComponentVersion='1.11.15-preview.1')
+                JHHPhotoAPIVersion=1, JHHComponentVersion='1.11.15-preview.2',
+                MinimumOSVersion='16.0', CFBundleShortVersionString='1.11.15', CFBundleVersion='15.3')
+    # Xcode's generic XCTest host includes a full-library usage string by default.
+    # This component requests add-only access, so the delivered host must match it.
+    data.pop('NSPhotoLibraryUsageDescription', None)
     (app / 'Info.plist').write_bytes(plistlib.dumps(data))
     test_bundles = list((app / 'PlugIns').glob('*.xctest'))
     if len(test_bundles) != 1:
@@ -127,6 +131,7 @@ def package_app(app, output):
     test_info = test_bundles[0] / 'Info.plist'
     test_data = plistlib.loads(test_info.read_bytes())
     test_data['NSPhotoLibraryAddUsageDescription'] = PHOTO_USAGE
+    test_data.pop('NSPhotoLibraryUsageDescription', None)
     test_info.write_bytes(plistlib.dumps(test_data))
     architectures = {'runner': verify_macho(app / data['CFBundleExecutable']),
                      'test': verify_macho(test_bundles[0] / test_data['CFBundleExecutable'])}
@@ -155,7 +160,7 @@ def package_app(app, output):
         for item in files:
             if hashlib.sha256(z.read(item['path'])).hexdigest() != item['sha256']:
                 raise RuntimeError('IPA entry verification failed')
-    result = {'component':'MirrorGoodGood-WDA-Photos', 'version':'1.11.15-preview.1', 'apiVersion':1,
+    result = {'component':'MirrorGoodGood-WDA-Photos', 'version':'1.11.15-preview.2', 'apiVersion':1,
               'upstream':'WebDriverAgent 12.0.0', 'upstream_source_sha256':SOURCE_SHA256,
               'signed':False, 'physical_phone_tested':False, 'ipa':ipa.name, 'sha256':digest(ipa), 'files':files,
               'architectures': architectures}

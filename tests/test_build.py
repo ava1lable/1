@@ -47,7 +47,8 @@ class BuildTests(unittest.TestCase):
     def test_packaging_preserves_nested_test_and_removes_signing_debug_files(self):
         with tempfile.TemporaryDirectory() as temp:
             app=Path(temp)/'Runner.app'; test=app/'PlugIns/Test.xctest'; test.mkdir(parents=True)
-            (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'Runner','CFBundleSupportedPlatforms':['iPhoneOS']}))
+            (app/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'Runner','CFBundleSupportedPlatforms':['iPhoneOS'],
+                'NSPhotoLibraryUsageDescription':'Xcode template full-library description','MinimumOSVersion':'13.0'}))
             (app/'Runner').write_bytes(macho()); (app/'Runner').chmod(0o755)
             (test/'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'Test'})); (test/'Test').write_bytes(macho())
             library=app/'Frameworks/WebDriverAgentLib.framework'; library.mkdir(parents=True)
@@ -62,6 +63,7 @@ class BuildTests(unittest.TestCase):
                 info=plistlib.loads(z.read('Payload/Runner.app/Info.plist'))
                 self.assertIn('NSPhotoLibraryAddUsageDescription',info)
                 self.assertNotIn('NSPhotoLibraryUsageDescription',info)
+                self.assertEqual('16.0',info['MinimumOSVersion'])
 
     def test_plain_text_cannot_be_mislabeled_as_a_compiled_ipa(self):
         with tempfile.TemporaryDirectory() as temp:
