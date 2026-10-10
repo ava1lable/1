@@ -14,7 +14,27 @@ b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 def macho(platform=2):
     return struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, 2, 1, 24, 0, 0) + struct.pack('<6I', 0x32, 24, platform, 16 << 16, 18 << 16, 0)
 
+def universal(second_platform=2):
+    first = macho(); second = bytearray(macho(second_platform)); struct.pack_into('<I', second, 8, 2)
+    table = struct.pack('>7I', 0xcafebabe, 2, 0x0100000c, 0, 48, len(first), 0)
+    table += struct.pack('>5I', 0x0100000c, 2, 48 + len(first), len(second), 0)
+    return table + first + second
+
 class BuildTests(unittest.TestCase):
+    def test_universal_arm64_and_arm64e_preserved(self):
+        self.assertEqual([0, 2], [a['subtype'] for a in b.macho_architectures(universal())])
+
+    def test_universal_simulator_slice_rejected(self):
+        with self.assertRaises(RuntimeError): b.macho_architectures(universal(7))
+
+    def test_universal_out_of_bounds_slice_rejected(self):
+        data = bytearray(universal()); struct.pack_into('>I', data, 36, len(data) + 100)
+        with self.assertRaises(RuntimeError): b.macho_architectures(bytes(data))
+
+    def test_legacy_ios_device_load_command(self):
+        data = struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0, 2, 1, 16, 0, 0) + struct.pack('<4I', 0x25, 16, 16 << 16, 18 << 16)
+        self.assertEqual('iOS-device', b.macho_architectures(data)[0]['platform'])
+
     def test_simulator_binary_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             binary=Path(temp)/'test'; binary.write_bytes(macho(7))

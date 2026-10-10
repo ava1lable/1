@@ -20,18 +20,53 @@ PHOTO_USAGE = '将你在镜好好电脑端选择的图片保存到手机相册�
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+def macho_architectures(data):
+    fat_formats = {b'\xca\xfe\xba\xbe': ('>', False), b'\xbe\xba\xfe\xca': ('<', False),
+                   b'\xca\xfe\xba\xbf': ('>', True), b'\xbf\xba\xfe\xca': ('<', True)}
+    slices = []
+    if data[:4] in fat_formats:
+        endian, wide = fat_formats[data[:4]]
+        if len(data) < 8: raise RuntimeError('Truncated universal Mach-O')
+        count = struct.unpack_from(endian + 'I', data, 4)[0]
+        entry_size = 32 if wide else 20
+        table_end = 8 + count * entry_size
+        if not 0 < count <= 32 or table_end > len(data): raise RuntimeError('Invalid architecture table')
+        for index in range(count):
+            fields = struct.unpack_from(endian + ('IIQQII' if wide else 'IIIII'), data, 8 + index * entry_size)
+            cpu, subtype, start, size, alignment = fields[:5]
+            if cpu != 0x0100000c or alignment > 32 or start < table_end or size < 32 or start + size > len(data):
+                raise RuntimeError('Invalid iPhone architecture slice')
+            if start % (1 << alignment) or any(start < b and start + size > a for a, b, *_ in slices):
+                raise RuntimeError('Overlapping or misaligned architecture slices')
+            slices.append((start, start + size, cpu, subtype))
+    else:
+        slices.append((0, len(data), 0x0100000c, None))
+    result = []
+    for start, end, expected_cpu, expected_subtype in slices:
+        section = data[start:end]
+        if len(section) < 32 or struct.unpack_from('<II', section) != (0xfeedfacf, expected_cpu):
+            raise RuntimeError('Expected a compiled arm64 Mach-O')
+        subtype = struct.unpack_from('<I', section, 8)[0]
+        if expected_subtype is not None and subtype != expected_subtype:
+            raise RuntimeError('Architecture subtype does not match universal header')
+        commands, command_bytes = struct.unpack_from('<II', section, 16)
+        limit = 32 + command_bytes; offset = 32; platform_id = None
+        if not 0 < commands <= 65536 or limit > len(section): raise RuntimeError('Invalid load command bounds')
+        for _ in range(commands):
+            if offset + 8 > limit: raise RuntimeError('Truncated Mach-O')
+            kind, size = struct.unpack_from('<II', section, offset)
+            if size < 8 or offset + size > limit: raise RuntimeError('Invalid Mach-O command')
+            if kind == 0x32 and size >= 24: platform_id = struct.unpack_from('<I', section, offset + 8)[0]
+            elif kind == 0x25 and size >= 16: platform_id = 2  # LC_VERSION_MIN_IPHONEOS
+            offset += size
+        if offset != limit or platform_id != 2:
+            raise RuntimeError('Expected iOS device Mach-O, not a Simulator binary')
+        result.append({'cpu': 'arm64', 'subtype': subtype, 'platform': 'iOS-device'})
+    return result
+
 def verify_macho(path):
-    data = path.read_bytes()
-    if len(data) < 32 or struct.unpack_from('<II', data) != (0xfeedfacf, 0x0100000c):
-        raise RuntimeError('Expected a compiled arm64 Mach-O: ' + path.name)
-    commands = struct.unpack_from('<I', data, 16)[0]; offset = 32; platform_id = None
-    for _ in range(commands):
-        if offset + 8 > len(data): raise RuntimeError('Truncated Mach-O')
-        kind, size = struct.unpack_from('<II', data, offset)
-        if size < 8 or offset + size > len(data): raise RuntimeError('Invalid Mach-O command')
-        if kind == 0x32 and size >= 24: platform_id = struct.unpack_from('<I', data, offset + 8)[0]
-        offset += size
-    if platform_id != 2: raise RuntimeError('Expected iOS device Mach-O, not a Simulator binary')
+    try: return macho_architectures(path.read_bytes())
+    except RuntimeError as error: raise RuntimeError(str(error) + ': ' + path.name) from error
 
 def replace_once(path, before, after):
     text = path.read_text(encoding='utf-8')
@@ -93,12 +128,12 @@ def package_app(app, output):
     test_data = plistlib.loads(test_info.read_bytes())
     test_data['NSPhotoLibraryAddUsageDescription'] = PHOTO_USAGE
     test_info.write_bytes(plistlib.dumps(test_data))
-    verify_macho(app / data['CFBundleExecutable'])
-    verify_macho(test_bundles[0] / test_data['CFBundleExecutable'])
+    architectures = {'runner': verify_macho(app / data['CFBundleExecutable']),
+                     'test': verify_macho(test_bundles[0] / test_data['CFBundleExecutable'])}
     libraries = list(app.rglob('WebDriverAgentLib.framework/WebDriverAgentLib'))
     if len(libraries) != 1 or b'MirrorGoodGood-WDA-Photos' not in libraries[0].read_bytes():
         raise RuntimeError('Compiled WDA library does not contain the Photos extension')
-    verify_macho(libraries[0])
+    architectures['library'] = verify_macho(libraries[0])
     output.mkdir(parents=True, exist_ok=True)
     ipa = output / 'MirrorGoodGood-WDA-Photos-v1.11.15-unsigned.ipa'
     if ipa.exists():
@@ -122,7 +157,8 @@ def package_app(app, output):
                 raise RuntimeError('IPA entry verification failed')
     result = {'component':'MirrorGoodGood-WDA-Photos', 'version':'1.11.15-preview.1', 'apiVersion':1,
               'upstream':'WebDriverAgent 12.0.0', 'upstream_source_sha256':SOURCE_SHA256,
-              'signed':False, 'physical_phone_tested':False, 'ipa':ipa.name, 'sha256':digest(ipa), 'files':files}
+              'signed':False, 'physical_phone_tested':False, 'ipa':ipa.name, 'sha256':digest(ipa), 'files':files,
+              'architectures': architectures}
     result['patches'] = {p.name:digest(p) for p in sorted((ROOT / 'patches').glob('*')) if p.is_file()}
     for name in ['LICENSE', 'README.md']:
         shutil.copy2(ROOT / name, output / name)
