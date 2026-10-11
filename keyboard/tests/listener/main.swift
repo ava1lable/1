@@ -39,6 +39,10 @@ func finish() {
 func testOccupiedPort() {
     blocker = Darwin.socket(AF_INET, SOCK_STREAM, 0)
     check(blocker >= 0, "create exclusive port owner")
+    // Ignore a previous test connection's TIME_WAIT, without enabling the
+    // SO_REUSEPORT option that would allow concurrent listening owners.
+    var reuse: Int32 = 1
+    check(setsockopt(blocker, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0, "exclusive listener may reuse TIME_WAIT")
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)
@@ -105,4 +109,6 @@ service.onReady = {
     connection.start(queue: .main)
 }
 service.start()
-dispatchMain()
+// UIKit callbacks stay on the main thread. dispatchMain() exits that thread
+// in a command-line process, so retain a run loop to match the host lifecycle.
+RunLoop.main.run()
