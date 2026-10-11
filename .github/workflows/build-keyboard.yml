@@ -1,0 +1,35 @@
+name: Build unsigned MirrorGoodGood Keyboard
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'keyboard/**'
+      - '.github/workflows/build-keyboard.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check project and transport
+        run: python3 -m unittest discover -s keyboard/tests -v
+      - name: Build unsigned keyboard and containing app
+        run: python3 keyboard/build.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MirrorGoodGood-Keyboard-iOS16-unsigned
+          path: keyboard/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: keyboard-xcode-diagnostics
+          path: keyboard/build/xcode-build.log
+          if-no-files-found: ignore
+          retention-days: 7
