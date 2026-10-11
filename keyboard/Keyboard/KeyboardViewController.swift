@@ -18,7 +18,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         listener.onReady = { [weak self] in
             guard let self = self, self.active else { return }
-            self.status.text = "镜好好键盘 · USB · 修复1\n电脑配对码：\(self.pin)\n请在电脑选词，确认后文字写入这里。"
+            self.status.text = "镜好好键盘 · USB · 签名测试2\n电脑配对码：\(self.pin)\n请在电脑选词，确认后文字写入这里。"
         }
         listener.onWaiting = { [weak self] code in
             guard let self = self, self.active else { return }
@@ -87,7 +87,7 @@ final class KeyboardViewController: UIInputViewController {
         active = true; failures = 0
         pin = String(format: "%06d", Int.random(in: 0...999999))
         session = UUID().uuidString
-        status.text = "正在启动 USB 文字服务…\n镜好好键盘 · 修复1"
+        status.text = "正在启动 USB 文字服务…\n镜好好键盘 · 签名测试2"
         listener.start()
     }
     private func remove(_ id: UUID) {

@@ -1,4 +1,4 @@
-name: Build unsigned MirrorGoodGood Keyboard
+name: Build integrity-checked MirrorGoodGood Keyboard
 on:
   workflow_dispatch:
   push:
@@ -21,11 +21,11 @@ jobs:
         run: |
           swiftc keyboard/Keyboard/KeyboardLoopbackListener.swift keyboard/tests/listener/main.swift -o /tmp/jhh-keyboard-listener-check
           /tmp/jhh-keyboard-listener-check
-      - name: Build unsigned keyboard and containing app
+      - name: Build and verify ad-hoc integrity signatures inside out
         run: python3 keyboard/build.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: MirrorGoodGood-Keyboard-iOS16-unsigned
+          name: MirrorGoodGood-Keyboard-signing-check2
           path: keyboard/artifacts/
           if-no-files-found: error
           retention-days: 14

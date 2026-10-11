@@ -3,13 +3,15 @@ from pathlib import Path
 import hashlib, json, plistlib, shutil, subprocess, sys, zipfile
 
 ROOT = Path(__file__).resolve().parent
+VERSION = '1.0.2'
+BUILD = '3'
 
 def prepare():
     build = ROOT / 'build'
     build.mkdir(exist_ok=True)
     common = dict(CFBundleDevelopmentRegion='zh_CN', CFBundleExecutable='$(EXECUTABLE_NAME)',
                   CFBundleIdentifier='$(PRODUCT_BUNDLE_IDENTIFIER)', CFBundleInfoDictionaryVersion='6.0',
-                  CFBundleName='$(PRODUCT_NAME)', CFBundleShortVersionString='1.0.1', CFBundleVersion='2',
+                  CFBundleName='$(PRODUCT_NAME)', CFBundleShortVersionString=VERSION, CFBundleVersion=BUILD,
                   CFBundlePackageType='APPL', LSRequiresIPhoneOS=True)
     host = dict(common, CFBundleDisplayName='镜好好键盘', UILaunchScreen={}, UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
     keyboard = dict(common, CFBundleDisplayName='镜好好键盘', CFBundlePackageType='XPC!',
@@ -65,15 +67,27 @@ def main():
     extension=app/'PlugIns/JHHKeyboardExtension.appex'
     assert (extension/'JHHKeyboardExtension').is_file()
     assert plistlib.loads((extension/'Info.plist').read_bytes())['NSExtension']['NSExtensionAttributes']['RequestsOpenAccess']
+    # Give the Windows re-signer a complete Apple-generated signature layout.
+    # This is ad-hoc integrity signing, with no Apple account/certificate/profile.
+    # Sign inside out and require both verification checks before making an IPA.
+    with log.open('a',encoding='utf-8') as f:
+        for bundle in (extension, app):
+            subprocess.run(['codesign', '--force', '--sign', '-', '--timestamp=none', str(bundle)],
+                           stdout=f, stderr=subprocess.STDOUT, check=True)
+        for bundle in (extension, app):
+            subprocess.run(['codesign', '--verify', '--strict', '--verbose=2', str(bundle)],
+                           stdout=f, stderr=subprocess.STDOUT, check=True)
     out=ROOT/'artifacts'; out.mkdir(exist_ok=True)
-    ipa=out/'MirrorGoodGood-Keyboard-iOS16-unsigned.ipa'
+    ipa=out/'MirrorGoodGood-Keyboard-iOS16-signing-check2.ipa'
     with zipfile.ZipFile(ipa,'w',zipfile.ZIP_DEFLATED) as z:
         for p in sorted(app.rglob('*')):
             if p.is_file() and p.suffix != '.dSYM': z.write(p,'Payload/JHHKeyboard.app/'+p.relative_to(app).as_posix())
     checksum=hashlib.sha256(ipa.read_bytes()).hexdigest()
     (out/'SHA256SUMS.txt').write_text(checksum+'  '+ipa.name+'\n',encoding='utf-8')
-    (out/'build-result.json').write_text(json.dumps(dict(unsigned=True,minimum_ios='16.0',keyboard_extension_embedded=True,version='1.0.1',build='2',component_revision='phone-keyboard-r11',
+    (out/'build-result.json').write_text(json.dumps(dict(unsigned=False,minimum_ios='16.0',keyboard_extension_embedded=True,version=VERSION,build=BUILD,component_revision='phone-keyboard-r12',
+        signature_kind='ad-hoc-integrity-only',apple_identity_signed=False,personal_signing_required=True,
+        codesign_strict_verified=['JHHKeyboardExtension','JHHKeyboard'],
         signed_installation_verified=False,physical_input_tested=False,sha256=checksum),indent=2),encoding='utf-8')
-    print('Unsigned keyboard IPA packaged; signing and physical input not tested.')
+    print('Ad-hoc integrity checks passed. Personal signing and phone verification still required.')
 
 if __name__ == '__main__': main()
