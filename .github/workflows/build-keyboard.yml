@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Check project and transport
         run: python3 -m unittest discover -s keyboard/tests -v
+      - name: Exercise real macOS loopback listener and restart
+        run: |
+          swiftc keyboard/Keyboard/KeyboardLoopbackListener.swift keyboard/tests/listener/main.swift -o /tmp/jhh-keyboard-listener-check
+          /tmp/jhh-keyboard-listener-check
       - name: Build unsigned keyboard and containing app
         run: python3 keyboard/build.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

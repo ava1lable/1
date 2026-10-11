@@ -4,7 +4,7 @@ import Network
 
 final class KeyboardViewController: UIInputViewController {
     private let status = UILabel()
-    private var listener: NWListener?
+    private let listener = KeyboardLoopbackListener()
     private var peers: [UUID: NWConnection] = [:]
     private var buffers: [UUID: Data] = [:]
     private var authenticated = Set<UUID>()
@@ -13,10 +13,35 @@ final class KeyboardViewController: UIInputViewController {
     private var session = UUID().uuidString
     private var active = false
     private var failures = 0
-    private let port: NWEndpoint.Port = 9031
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        listener.onReady = { [weak self] in
+            guard let self = self, self.active else { return }
+            self.status.text = "镜好好键盘 · USB · 修复1\n电脑配对码：\(self.pin)\n请在电脑选词，确认后文字写入这里。"
+        }
+        listener.onWaiting = { [weak self] code in
+            guard let self = self, self.active else { return }
+            self.status.text = "文字服务正在等待（\(code)）\n如持续失败，请记录错误码。"
+        }
+        listener.onFailure = { [weak self] code in
+            guard let self = self, self.active else { return }
+            self.stop()
+            let advice = code == "listener_close_timeout"
+                ? "请切换到系统键盘，再切回镜好好键盘。"
+                : "请记录错误码，再点重新连接。"
+            self.status.text = "文字服务无法启动（\(code)）\n\(advice)"
+        }
+        listener.onConnection = { [weak self] connection in
+            guard let self = self, self.active, self.peers.count < 2 else { connection.cancel(); return }
+            let id = UUID(); let generation = self.session
+            self.peers[id] = connection; self.buffers[id] = Data()
+            connection.stateUpdateHandler = { [weak self] state in
+                if case .failed = state { self?.remove(id) }
+                if case .cancelled = state { self?.remove(id) }
+            }
+            connection.start(queue: .main); self.receive(id, generation)
+        }
         status.numberOfLines = 0
         status.textAlignment = .center
         status.font = .systemFont(ofSize: 15)
@@ -49,7 +74,7 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func nextKeyboard() { stop(); advanceToNextInputMode() }
     @objc private func restartService() { stop(); start() }
     private func stop() {
-        active = false; listener?.cancel(); listener = nil
+        active = false; listener.stop()
         for peer in peers.values { peer.cancel() }
         peers.removeAll(); buffers.removeAll(); authenticated.removeAll(); sequences.removeAll()
         pin = ""; session = UUID().uuidString
@@ -62,33 +87,8 @@ final class KeyboardViewController: UIInputViewController {
         active = true; failures = 0
         pin = String(format: "%06d", Int.random(in: 0...999999))
         session = UUID().uuidString
-        let generation = session
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: port)
-        do {
-            let server = try NWListener(using: parameters, on: port)
-            listener = server
-            server.stateUpdateHandler = { [weak self] state in
-                guard let self = self, self.active, self.session == generation else { return }
-                switch state {
-                case .ready: self.status.text = "镜好好键盘 · USB\n电脑配对码：\(self.pin)\n请在电脑选词，确认后文字写入这里。"
-                case .failed: self.stop(); self.status.text = "文字服务无法启动，请点重新连接。"
-                default: break
-                }
-            }
-            server.newConnectionHandler = { [weak self] connection in
-                guard let self = self, self.active, self.session == generation, self.peers.count < 2 else {
-                    connection.cancel(); return
-                }
-                let id = UUID(); self.peers[id] = connection; self.buffers[id] = Data()
-                connection.stateUpdateHandler = { [weak self] state in
-                    if case .failed = state { self?.remove(id) }
-                    if case .cancelled = state { self?.remove(id) }
-                }
-                connection.start(queue: .main); self.receive(id, generation)
-            }
-            server.start(queue: .main)
-        } catch { stop(); status.text = "文字服务无法启动，请点重新连接。" }
+        status.text = "正在启动 USB 文字服务…\n镜好好键盘 · 修复1"
+        listener.start()
     }
     private func remove(_ id: UUID) {
         peers.removeValue(forKey: id)?.cancel(); buffers.removeValue(forKey: id)

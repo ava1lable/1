@@ -78,9 +78,13 @@ class ProjectTests(unittest.TestCase):
         info=plistlib.loads((ROOT/'build/Keyboard.plist').read_bytes())
         self.assertEqual(info['NSExtension']['NSExtensionPointIdentifier'],'com.apple.keyboard-service')
         self.assertTrue(info['NSExtension']['NSExtensionAttributes']['RequestsOpenAccess'])
+        self.assertEqual(info['CFBundleShortVersionString'],'1.0.1')
+        self.assertEqual(info['CFBundleVersion'],'2')
+        references=[v.get('path') for v in project['objects'].values() if v.get('isa')=='PBXFileReference']
+        self.assertIn('../Keyboard/KeyboardLoopbackListener.swift', references)
     def test_host_and_extension_documents(self):
         source=(ROOT/'Keyboard/KeyboardViewController.swift').read_text(encoding='utf-8')
-        self.assertIn('127.0.0.1',source); self.assertIn('documentIdentifier',source)
+        self.assertIn('documentIdentifier',source)
         self.assertNotIn('documentContextBeforeInput',source)
         self.assertNotIn('documentContextAfterInput',source)
         self.assertNotIn('UIPasteboard',source)

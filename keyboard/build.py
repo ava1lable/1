@@ -9,7 +9,7 @@ def prepare():
     build.mkdir(exist_ok=True)
     common = dict(CFBundleDevelopmentRegion='zh_CN', CFBundleExecutable='$(EXECUTABLE_NAME)',
                   CFBundleIdentifier='$(PRODUCT_BUNDLE_IDENTIFIER)', CFBundleInfoDictionaryVersion='6.0',
-                  CFBundleName='$(PRODUCT_NAME)', CFBundleShortVersionString='1.0.0', CFBundleVersion='1',
+                  CFBundleName='$(PRODUCT_NAME)', CFBundleShortVersionString='1.0.1', CFBundleVersion='2',
                   CFBundlePackageType='APPL', LSRequiresIPhoneOS=True)
     host = dict(common, CFBundleDisplayName='镜好好键盘', UILaunchScreen={}, UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
     keyboard = dict(common, CFBundleDisplayName='镜好好键盘', CFBundlePackageType='XPC!',
@@ -23,9 +23,10 @@ def prepare():
         key = hashlib.sha256(identity.encode()).hexdigest()[:24].upper(); objects[key] = properties; return key
     host_file = add('hostfile', isa='PBXFileReference', lastKnownFileType='sourcecode.swift', path='../Host/AppDelegate.swift', sourceTree='<group>')
     key_file = add('keyfile', isa='PBXFileReference', lastKnownFileType='sourcecode.swift', path='../Keyboard/KeyboardViewController.swift', sourceTree='<group>')
+    listener_file = add('listenerfile', isa='PBXFileReference', lastKnownFileType='sourcecode.swift', path='../Keyboard/KeyboardLoopbackListener.swift', sourceTree='<group>')
     host_product = add('hostproduct', isa='PBXFileReference', explicitFileType='wrapper.application', path='JHHKeyboard.app', sourceTree='BUILT_PRODUCTS_DIR')
     key_product = add('keyproduct', isa='PBXFileReference', explicitFileType='wrapper.app-extension', path='JHHKeyboardExtension.appex', sourceTree='BUILT_PRODUCTS_DIR')
-    group = add('group', isa='PBXGroup', children=[host_file,key_file,host_product,key_product], sourceTree='<group>')
+    group = add('group', isa='PBXGroup', children=[host_file,key_file,listener_file,host_product,key_product], sourceTree='<group>')
     def config(name, extension):
         settings = dict(SDKROOT='iphoneos', IPHONEOS_DEPLOYMENT_TARGET='16.0', SWIFT_VERSION='5.0', TARGETED_DEVICE_FAMILY='1,2',
                         CODE_SIGNING_ALLOWED='NO', CLANG_ENABLE_MODULES='YES', PRODUCT_NAME='$(TARGET_NAME)',
@@ -36,16 +37,16 @@ def prepare():
                         SWIFT_OPTIMIZATION_LEVEL='-O')
         value = add(name+'release', isa='XCBuildConfiguration', name='Release', buildSettings=settings)
         return add(name+'configs', isa='XCConfigurationList', buildConfigurations=[value], defaultConfigurationName='Release', defaultConfigurationIsVisible=0)
-    def phase(name, file):
-        entry=add(name+'entry', isa='PBXBuildFile', fileRef=file)
-        return add(name+'sources', isa='PBXSourcesBuildPhase', buildActionMask=2147483647, files=[entry], runOnlyForDeploymentPostprocessing=0)
+    def phase(name, files):
+        entries=[add(name+str(index)+'entry', isa='PBXBuildFile', fileRef=file) for index,file in enumerate(files)]
+        return add(name+'sources', isa='PBXSourcesBuildPhase', buildActionMask=2147483647, files=entries, runOnlyForDeploymentPostprocessing=0)
     key_target = add('keytarget', isa='PBXNativeTarget', name='JHHKeyboardExtension', productName='JHHKeyboardExtension', productReference=key_product,
-                     productType='com.apple.product-type.app-extension', buildConfigurationList=config('key',True), buildPhases=[phase('key',key_file)], buildRules=[], dependencies=[])
+                     productType='com.apple.product-type.app-extension', buildConfigurationList=config('key',True), buildPhases=[phase('key',[key_file,listener_file])], buildRules=[], dependencies=[])
     dependency = add('dependency', isa='PBXTargetDependency', target=key_target)
     embed_file = add('embedfile', isa='PBXBuildFile', fileRef=key_product, settings=dict(ATTRIBUTES=['RemoveHeadersOnCopy']))
     embed = add('embed', isa='PBXCopyFilesBuildPhase', buildActionMask=2147483647, dstPath='', dstSubfolderSpec=13, files=[embed_file], name='Embed App Extensions', runOnlyForDeploymentPostprocessing=0)
     host_target = add('hosttarget', isa='PBXNativeTarget', name='JHHKeyboard', productName='JHHKeyboard', productReference=host_product,
-                     productType='com.apple.product-type.application', buildConfigurationList=config('host',False), buildPhases=[phase('host',host_file),embed], buildRules=[], dependencies=[dependency])
+                     productType='com.apple.product-type.application', buildConfigurationList=config('host',False), buildPhases=[phase('host',[host_file]),embed], buildRules=[], dependencies=[dependency])
     project = add('project', isa='PBXProject', attributes=dict(LastUpgradeCheck='1640'), buildConfigurationList=config('project',False), compatibilityVersion='Xcode 14.0', developmentRegion='zh_CN', hasScannedForEncodings=0, knownRegions=['zh_CN','en'], mainGroup=group, projectDirPath='', projectRoot='', targets=[host_target,key_target])
     path=build/'JHHKeyboard.xcodeproj'; path.mkdir(exist_ok=True)
     # Xcode accepts XML property lists as pbxproj files; no third-party generator.
@@ -71,7 +72,7 @@ def main():
             if p.is_file() and p.suffix != '.dSYM': z.write(p,'Payload/JHHKeyboard.app/'+p.relative_to(app).as_posix())
     checksum=hashlib.sha256(ipa.read_bytes()).hexdigest()
     (out/'SHA256SUMS.txt').write_text(checksum+'  '+ipa.name+'\n',encoding='utf-8')
-    (out/'build-result.json').write_text(json.dumps(dict(unsigned=True,minimum_ios='16.0',keyboard_extension_embedded=True,
+    (out/'build-result.json').write_text(json.dumps(dict(unsigned=True,minimum_ios='16.0',keyboard_extension_embedded=True,version='1.0.1',build='2',component_revision='phone-keyboard-r11',
         signed_installation_verified=False,physical_input_tested=False,sha256=checksum),indent=2),encoding='utf-8')
     print('Unsigned keyboard IPA packaged; signing and physical input not tested.')
 
