@@ -3,6 +3,7 @@
 #import "FBRouteRequest.h"
 #import "FBResponsePayload.h"
 #import "XCUIApplication+FBHelpers.h"
+#import "XCUIApplication.h"
 #import "XCUIApplication+FBQuiescence.h"
 #import "FBXCTestDaemonsProxy.h"
 #import "XCSynthesizedEventRecord.h"
@@ -11,10 +12,16 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #include <math.h>
+#include "JHHCoordinateTransform.h"
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
 static unsigned long long JHHLastSequence;
+static JHHTransform JHHCoordinates;
+static pid_t JHHCoordinatePID;
+static UIInterfaceOrientation JHHCoordinateOrientation;
+static CFAbsoluteTime JHHCoordinateTime;
+static BOOL JHHHasCoordinates;
 
 + (void)initialize
 {
@@ -31,8 +38,8 @@ static unsigned long long JHHLastSequence;
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.1.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"features":@[@"tap", @"swipe"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.2.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -75,21 +82,32 @@ static unsigned long long JHHLastSequence;
   double detectionMs = (CFAbsoluteTimeGetCurrent() - started) * 1000;
   if (orientation == UIInterfaceOrientationUnknown) return [self rejected:@"orientation_unavailable"];
   BOOL landscape = UIInterfaceOrientationIsLandscape(orientation);
-  CGSize natural = UIScreen.mainScreen.fixedCoordinateSpace.bounds.size;
-  CGSize size = landscape ? CGSizeMake(fmax(natural.width, natural.height), fmin(natural.width, natural.height))
-                          : CGSizeMake(fmin(natural.width, natural.height), fmax(natural.width, natural.height));
-  if (!isfinite(size.width) || !isfinite(size.height) || size.width < 1 || size.height < 1)
-    return [self rejected:@"screen_unavailable"];
   if (landscape != [a[@"landscape"] boolValue])
     return [self rejected:@"orientation_changed"];
 
-  // Use oriented screen points directly. Resolving app.frame and three
-  // XCUICoordinates invokes accessibility snapshots on each gesture. The
-  // event record carries interface orientation, including upside-down/right.
-  CGPoint from = CGPointMake(fmin([a[@"x"] doubleValue], 0.999999) * size.width,
-                             fmin([a[@"y"] doubleValue], 0.999999) * size.height);
-  CGPoint to = CGPointMake(fmin([a[@"toX"] doubleValue], 0.999999) * size.width,
-                           fmin([a[@"toY"] doubleValue], 0.999999) * size.height);
+  // Use XCTest's own screenPoint basis, as upstream W3C synthesis does.
+  // UIScreen bounds may differ from the application's XCTest coordinate
+  // origin/scale. Cache only geometry, never an element or an input target.
+  BOOL geometryCached = JHHHasCoordinates && JHHCoordinatePID == app.processID
+    && JHHCoordinateOrientation == orientation && started-JHHCoordinateTime < 5;
+  if (!geometryCached) {
+    JHHHasCoordinates = NO;
+    XCUICoordinate *origin = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
+    CGPoint p0 = origin.screenPoint;
+    CGPoint px = [app coordinateWithNormalizedOffset:CGVectorMake(0.5, 0)].screenPoint;
+    CGPoint py = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0.5)].screenPoint;
+    if (!JHHTransformCreate((JHHPoint){p0.x,p0.y}, (JHHPoint){px.x,px.y},
+                            (JHHPoint){py.x,py.y}, &JHHCoordinates))
+      return [self rejected:@"geometry_unavailable"];
+    JHHCoordinatePID = app.processID; JHHCoordinateOrientation = orientation;
+    JHHCoordinateTime = CFAbsoluteTimeGetCurrent(); JHHHasCoordinates = YES;
+  }
+  JHHPoint fromPoint, toPoint;
+  if (!JHHTransformMap(JHHCoordinates, [a[@"x"] doubleValue], [a[@"y"] doubleValue], &fromPoint)
+      || !JHHTransformMap(JHHCoordinates, [a[@"toX"] doubleValue], [a[@"toY"] doubleValue], &toPoint))
+    return [self rejected:@"invalid_coordinate"];
+  CGPoint from = CGPointMake(fromPoint.x,fromPoint.y), to = CGPointMake(toPoint.x,toPoint.y);
+  double geometryMs = (CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs;
   XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"JHH Touch"
                                                                          interfaceOrientation:orientation];
   XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:from offset:0];
@@ -116,7 +134,8 @@ static unsigned long long JHHLastSequence;
   if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])
     return [self rejected:@"synthesis_failed"];
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"preflightMs":@(preflight),
-    @"detectionMs":@(detectionMs), @"eventBuildMs":@(preflight - detectionMs), @"engine":@"screen-event-v1",
+    @"detectionMs":@(detectionMs), @"geometryMs":@(geometryMs), @"geometryCached":@(geometryCached),
+    @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
 @end
