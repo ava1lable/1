@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 SOURCE_URL = 'https://codeload.github.com/appium/WebDriverAgent/zip/refs/tags/v12.0.0'
 SOURCE_SHA256 = '9c435b122b93d0f88cbf06b65eec5756d30c12d90a73b2d1c8caeef00edf540e'
-VERSION = '1.7.0'
+VERSION = '1.8.0'
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -52,16 +52,16 @@ def prepare(archive=None, output=None):
             archive.write_bytes(r.read())
     extract_verified(archive, output)
     commands = source / 'WebDriverAgentLib/Commands'
-    for patch in (ROOT / 'patches').glob('JHH*'):
+    for patch in (ROOT / 'patches').glob('*'):
         shutil.copy2(patch, commands / patch.name)
     with (commands / 'FBCustomCommands.m').open('a', encoding='utf-8') as f:
-        f.write('\n#if TARGET_OS_IOS\n#import "JHHControlCommands.m"\n#endif\n')
+        f.write('\n#if TARGET_OS_IOS\n#import "JHHControlCommands.m"\n#import "FBJHHPhotoCommands.m"\n#endif\n')
     web = source / 'WebDriverAgentLib/Routing/FBWebServer.m'
-    replace_once(web, '#import "FBCommandHandler.h"', '#import "FBCommandHandler.h"\n#import "../Commands/JHHControlCommands.h"')
+    replace_once(web, '#import "FBCommandHandler.h"', '#import "FBCommandHandler.h"\n#import "../Commands/JHHControlCommands.h"\n#import "../Commands/FBJHHPhotoCommands.h"')
     text = web.read_text(encoding='utf-8')
     start = text.index('  NSArray *handlersClasses = FBClassesThatConformsToProtocol')
     end = text.index('\n}', start)
-    text = text[:start] + '  return @[JHHControlCommands.class];' + text[end:]
+    text = text[:start] + '  return @[JHHControlCommands.class, FBJHHPhotoCommands.class];' + text[end:]
     web.write_text(text, encoding='utf-8')
     replace_once(web, '  [self initScreenshotsBroadcaster];', '  // Stage 1: no screenshot broadcaster.')
     replace_once(web, '  [self registerServerKeyRouteHandlers];', '  // Stage 1: no calibration, shutdown or generic WDA routes.')
@@ -72,6 +72,10 @@ def prepare(archive=None, output=None):
     runner = source / 'WebDriverAgentRunner/UITestingUITests.m'
     replace_once(runner, '  [FBConfiguration configureDefaultKeyboardPreferences];',
         '  // Stage 1 does not change keyboard preferences.\n  [FBConfiguration setWaitForIdleTimeout:0];\n  [FBConfiguration setAnimationCoolOffTimeout:0];')
+    info_path=source/'WebDriverAgentRunner/Info.plist'
+    info=plistlib.loads(info_path.read_bytes())
+    info['NSPhotoLibraryAddUsageDescription']='将你在镜好好电脑端选择的图片保存到相册；不读取已有照片。'
+    info_path.write_bytes(plistlib.dumps(info))
     return source, output
 
 def macho_architectures(data):
@@ -145,12 +149,12 @@ def package(app, source, artifacts):
     test_info = plistlib.loads(test_info_file.read_bytes())
     main_id, test_id = bundle_identifiers('com.jinghaohao.touch.runner')
     info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='镜好好触控', CFBundleName='JHHTouchAgent',
-                CFBundleShortVersionString=VERSION, CFBundleVersion='8', MinimumOSVersion='16.0',
+                CFBundleShortVersionString=VERSION, CFBundleVersion='9', MinimumOSVersion='16.0',
                 JHHComponent='JHH-Touch-Agent', JHHProtocolVersion=1)
-    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='8')
+    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='9')
     for data in (info, test_info):
         data.pop('NSPhotoLibraryUsageDescription', None)
-        data.pop('NSPhotoLibraryAddUsageDescription', None)
+        data['NSPhotoLibraryAddUsageDescription'] = '将你在镜好好电脑端选择的图片保存到相册；不读取已有照片。'
     info_file.write_bytes(plistlib.dumps(info))
     test_info_file.write_bytes(plistlib.dumps(test_info))
     binaries = [app / info['CFBundleExecutable'], nested / test_info['CFBundleExecutable']]
@@ -186,7 +190,7 @@ def package(app, source, artifacts):
             if path.is_file(): z.write(path, 'touch-agent/' + path.relative_to(ROOT).as_posix())
     result = {'component':'JHH-Touch-Agent','version':VERSION,'protocol':1,'upstream':'Appium WebDriverAgent 12.0.0',
               'upstreamSha256':SOURCE_SHA256,'bundleIdentifier':main_id,'testBundleIdentifier':test_id,
-              'features':['tap','swipe','native-keyboard-v1','native-keyboard-batch-v1','geometry-cache-v1','native-candidate-numbers-v1','keyboard-standard-snapshot-v1','committed-text-v1'],'signed':False,'phoneTested':False,'ipa':ipa.name,'sha256':digest(ipa),
+              'features':['tap','swipe','native-keyboard-v1','native-keyboard-batch-v1','geometry-cache-v1','native-candidate-numbers-v1','keyboard-standard-snapshot-v1','committed-text-v1','photo-upload-v1'],'signed':False,'phoneTested':False,'ipa':ipa.name,'sha256':digest(ipa),
               'files':files,'patches':{p.name:digest(p) for p in (ROOT/'patches').glob('*')}}
     (artifacts / 'build-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     (artifacts / 'SHA256SUMS.txt').write_text(result['sha256']+'  '+ipa.name+'\n',encoding='utf-8')
@@ -199,7 +203,7 @@ def build(source, output):
                '-scheme','WebDriverAgentRunner','-configuration','Release','-sdk','iphoneos',
                '-destination','generic/platform=iOS','-derivedDataPath',str(derived),
                'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','IPHONEOS_DEPLOYMENT_TARGET=16.0',
-               'ARCHS=arm64','PRODUCT_BUNDLE_IDENTIFIER=com.jinghaohao.touch','DEVELOPMENT_TEAM=']
+               'ARCHS=arm64','PRODUCT_BUNDLE_IDENTIFIER=com.jinghaohao.touch','DEVELOPMENT_TEAM=','OTHER_LDFLAGS=$(inherited) -framework Photos -framework ImageIO']
     log = output / 'xcode-build.log'
     with log.open('w',encoding='utf-8') as f: result = subprocess.run(command,cwd=source,stdout=f,stderr=subprocess.STDOUT)
     if result.returncode:
