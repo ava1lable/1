@@ -57,7 +57,7 @@ def prepare(archive=None, output=None):
     with (commands / 'FBCustomCommands.m').open('a', encoding='utf-8') as f:
         f.write('\n#if TARGET_OS_IOS\n#import "JHHControlCommands.m"\n#endif\n')
     web = source / 'WebDriverAgentLib/Routing/FBWebServer.m'
-    replace_once(web, '#import "FBCommandHandler.h"', '#import "FBCommandHandler.h"\n#import "JHHControlCommands.h"')
+    replace_once(web, '#import "FBCommandHandler.h"', '#import "FBCommandHandler.h"\n#import "../Commands/JHHControlCommands.h"')
     text = web.read_text(encoding='utf-8')
     start = text.index('  NSArray *handlersClasses = FBClassesThatConformsToProtocol')
     end = text.index('\n}', start)
@@ -112,7 +112,7 @@ def package(app, source, artifacts):
     test_info_file = nested / 'Info.plist'
     test_info = plistlib.loads(test_info_file.read_bytes())
     main_id, test_id = bundle_identifiers('com.jinghaohao.touch.runner')
-    info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='���úô���',
+    info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='镜好好触控', CFBundleName='JHHTouchAgent',
                 CFBundleShortVersionString=VERSION, CFBundleVersion='1', MinimumOSVersion='16.0',
                 JHHComponent='JHH-Touch-Agent', JHHProtocolVersion=1)
     test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='1')
