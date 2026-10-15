@@ -13,6 +13,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #include <math.h>
 #include "JHHCoordinateTransform.h"
+#include "JHHKeyboardMap.h"
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
@@ -33,13 +34,14 @@ static BOOL JHHHasCoordinates;
   return @[
     [[[FBRoute GET:@"/jhh/v1/status"] withoutSession] respondWithTarget:self action:@selector(status:)],
     [[[FBRoute POST:@"/jhh/v1/gesture"] withoutSession] respondWithTarget:self action:@selector(gesture:)],
+    [[[FBRoute POST:@"/jhh/v1/key"] withoutSession] respondWithTarget:self action:@selector(key:)],
   ];
 }
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.2.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.3.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -138,4 +140,81 @@ static BOOL JHHHasCoordinates;
     @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
++ (XCUIElement *)keyboardKey:(XCUIElement *)keyboard aliases:(NSArray<NSString *> *)aliases
+{
+  NSPredicate *predicate = [NSPredicate predicateWithFormat:@"label IN %@ OR identifier IN %@", aliases, aliases];
+  for (NSNumber *type in @[@(XCUIElementTypeKey), @(XCUIElementTypeButton)]) {
+    NSArray<XCUIElement *> *keys = [[keyboard descendantsMatchingType:type.unsignedIntegerValue]
+      matchingPredicate:predicate].allElementsBoundByIndex;
+    XCUIElement *match = nil;
+    for (XCUIElement *candidate in keys) {
+      if (!candidate.hittable) continue;
+      if (match != nil) return nil; // Never guess between ambiguous keyboard keys.
+      match = candidate;
+    }
+    if (match != nil) return match;
+  }
+  return nil;
+}
+
++ (id<FBResponsePayload>)key:(FBRouteRequest *)request
+{
+  NSDictionary *a = request.arguments;
+  if (![a[@"instance"] isKindOfClass:NSString.class] || ![a[@"instance"] isEqual:JHHInstance])
+    return [self rejected:@"agent_restarted"];
+  if (![self number:a[@"sequence"] min:1 max:9007199254740991.0] ||
+      floor([a[@"sequence"] doubleValue]) != [a[@"sequence"] doubleValue])
+    return [self rejected:@"invalid_sequence"];
+  unsigned long long sequence = [a[@"sequence"] unsignedLongLongValue];
+  if (sequence <= JHHLastSequence) return [self rejected:@"duplicate_or_stale"];
+  if (![self number:a[@"usage"] min:4 max:99] || floor([a[@"usage"] doubleValue]) != [a[@"usage"] doubleValue] ||
+      ![self number:a[@"modifiers"] min:0 max:255] || floor([a[@"modifiers"] doubleValue]) != [a[@"modifiers"] doubleValue])
+    return [self rejected:@"invalid_key"];
+  unsigned usage = [a[@"usage"] unsignedIntValue], modifiers = [a[@"modifiers"] unsignedIntValue];
+  // Shift is interpreted as a requested on-screen key, never as a held HID key.
+  if (modifiers & ~0x22U) return [self rejected:@"unsupported_modifiers"];
+  int character = JHHKeyboardCharacter(usage, (modifiers & 0x22U) != 0);
+  NSArray<NSString *> *aliases;
+  if (usage == 40 || usage == 88)
+    aliases = @[@"return", @"Return", @"换行", @"完成", @"发送", @"搜索", @"前往", @"下一项", @"下一步", @"go", @"Go", @"Done", @"Send", @"Search", @"Next", @"Join"];
+  else if (usage == 42) aliases = @[@"delete", @"Delete", @"删除", @"退格"];
+  else if (usage == 44) aliases = @[@"space", @"Space", @"空格", @"空白", @"spacebar"];
+  else if (character) {
+    NSString *value = [NSString stringWithFormat:@"%c", character];
+    // With no desktop Shift, preserve the phone's automatic capitalization.
+    aliases = usage >= 4 && usage <= 29 && modifiers == 0 ? @[value, value.uppercaseString] : @[value];
+  } else return [self rejected:@"unsupported_key"];
+
+  CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+  XCUIApplication *app = XCUIApplication.fb_activeApplication;
+  app.fb_shouldWaitForQuiescence = NO;
+  XCUIElement *keyboard = app.keyboards.firstMatch;
+  if (!keyboard.exists) return [self rejected:@"keyboard_not_visible"];
+  XCUIElement *key = [self keyboardKey:keyboard aliases:aliases];
+  // Consume BEFORE any keyboard-layout tap. An uncertain response is never replayed.
+  JHHLastSequence = sequence;
+  if (key == nil && character && character != ' ') {
+    NSArray<NSArray<NSString *> *> *switchGroups = usage >= 4 && usage <= 29
+      ? @[@[@"ABC", @"letters", @"字母", @"拼音"], @[@"shift", @"Shift", @"大写"]]
+      : @[@[@"123", @"numbers", @"Number", @"数字"], @[@"#+=", @"symbols", @"符号"]];
+    for (NSArray<NSString *> *switches in switchGroups) {
+      if (key != nil) break;
+      // Do not change case for ordinary letters: respect the phone keyboard.
+      if (usage >= 4 && usage <= 29 && modifiers == 0 && [switches containsObject:@"shift"]) break;
+      XCUIElement *layoutKey = [self keyboardKey:keyboard aliases:switches];
+      if (layoutKey == nil) continue;
+      [layoutKey tap];
+      keyboard = app.keyboards.firstMatch;
+      key = [self keyboardKey:keyboard aliases:aliases];
+    }
+  }
+  if (key == nil) return [self rejected:@"key_unavailable"];
+  double detectionMs = (CFAbsoluteTimeGetCurrent()-started)*1000;
+  // Tap only a key inside the active system keyboard. No input-field search,
+  // setValue, typeText, clipboard injection or implicit return/submit.
+  [key tap];
+  return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"engine":@"native-keyboard-v1",
+    @"detectionMs":@(detectionMs), @"executionMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs)});
+}
+
 @end
