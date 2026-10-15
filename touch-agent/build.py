@@ -74,24 +74,56 @@ def prepare(archive=None, output=None):
         '  // Stage 1 does not change keyboard preferences.\n  [FBConfiguration setWaitForIdleTimeout:0];\n  [FBConfiguration setAnimationCoolOffTimeout:0];')
     return source, output
 
+def macho_architectures(data):
+    fat_formats = {b'\xca\xfe\xba\xbe': ('>', False), b'\xbe\xba\xfe\xca': ('<', False),
+                   b'\xca\xfe\xba\xbf': ('>', True), b'\xbf\xba\xfe\xca': ('<', True)}
+    slices = []
+    if data[:4] in fat_formats:
+        endian, wide = fat_formats[data[:4]]
+        if len(data) < 8: raise RuntimeError('Truncated universal Mach-O')
+        count = struct.unpack_from(endian + 'I', data, 4)[0]
+        entry_size = 32 if wide else 20
+        table_end = 8 + count * entry_size
+        if not 0 < count <= 32 or table_end > len(data): raise RuntimeError('Invalid architecture table')
+        for index in range(count):
+            fields = struct.unpack_from(endian + ('IIQQII' if wide else 'IIIII'), data, 8 + index * entry_size)
+            cpu, subtype, start, size, alignment = fields[:5]
+            if cpu != 0x0100000c or alignment > 32 or start < table_end or size < 32 or start + size > len(data):
+                raise RuntimeError('Invalid iPhone architecture slice')
+            if start % (1 << alignment) or any(start < b and start + size > a for a, b, *_ in slices):
+                raise RuntimeError('Overlapping or misaligned architecture slices')
+            slices.append((start, start + size, cpu, subtype))
+    else:
+        slices.append((0, len(data), 0x0100000c, None))
+    result = []
+    for start, end, expected_cpu, expected_subtype in slices:
+        section = data[start:end]
+        if len(section) < 32 or struct.unpack_from('<II', section) != (0xfeedfacf, expected_cpu):
+            raise RuntimeError('Expected a compiled arm64 Mach-O')
+        subtype = struct.unpack_from('<I', section, 8)[0]
+        if expected_subtype is not None and subtype != expected_subtype:
+            raise RuntimeError('Architecture subtype does not match universal header')
+        commands, command_bytes = struct.unpack_from('<II', section, 16)
+        limit = 32 + command_bytes; offset = 32; platform_id = None
+        if not 0 < commands <= 65536 or limit > len(section): raise RuntimeError('Invalid load command bounds')
+        for _ in range(commands):
+            if offset + 8 > limit: raise RuntimeError('Truncated Mach-O')
+            kind, size = struct.unpack_from('<II', section, offset)
+            if size < 8 or offset + size > limit: raise RuntimeError('Invalid Mach-O command')
+            if kind == 0x32 and size >= 24: platform_id = struct.unpack_from('<I', section, offset + 8)[0]
+            elif kind == 0x25 and size >= 16: platform_id = 2  # LC_VERSION_MIN_IPHONEOS
+            offset += size
+        if offset != limit or platform_id != 2:
+            raise RuntimeError('Expected iOS device Mach-O, not a Simulator binary')
+        result.append({'cpu': 'arm64', 'subtype': subtype, 'platform': 'iOS-device'})
+    return result
+
+def verify_macho(path):
+    try: return macho_architectures(path.read_bytes())
+    except RuntimeError as error: raise RuntimeError(str(error) + ': ' + path.name) from error
+
 def verify_device_binary(path):
-    data = path.read_bytes()
-    if len(data) < 32 or struct.unpack_from('<II', data) != (0xfeedfacf, 0x0100000c):
-        raise RuntimeError('Expected thin arm64 iPhone Mach-O: ' + path.name)
-    count, size = struct.unpack_from('<II', data, 16)
-    limit = 32 + size
-    if not 0 < count < 65536 or limit > len(data): raise RuntimeError('Invalid Mach-O bounds')
-    offset = 32
-    is_device = False
-    for _ in range(count):
-        if offset + 8 > limit: raise RuntimeError('Truncated Mach-O command')
-        kind, length = struct.unpack_from('<II', data, offset)
-        if length < 8 or offset + length > limit: raise RuntimeError('Invalid Mach-O command')
-        if kind == 0x32 and length >= 24:
-            is_device = struct.unpack_from('<I', data, offset + 8)[0] == 2
-        elif kind == 0x25 and length >= 16: is_device = True
-        offset += length
-    if offset != limit or not is_device: raise RuntimeError('Simulator binary is not an iPhone IPA')
+    return verify_macho(path)
 
 def bundle_identifiers(main_id):
     return main_id, main_id + '.WebDriverAgentRunner'
