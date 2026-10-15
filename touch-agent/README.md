@@ -16,3 +16,6 @@ Version 1.7 adds /jhh/v1/text for committed Unicode and separately validated edi
 
 ## v1.8.0 photo upload
 Adds USB-only PhotoKit add-only image upload on the existing lightweight runner; no second XCTest instance. Only after PhotoKit confirms success is an image counted saved. Hashes and image type are checked; uncertain commits are never repeated. Legacy /wda/jhh/photos paths are preserved for the public photo client. Signing and real phone permission/import remain user installation tests.
+
+## v1.9.0 execution receipts
+Reads the actual XCTest completion BOOL and safe pre/post keyboard/focus flags, including app-change detection. A hidden keyboard with observed editing focus remains usable. Unknown outcomes retain text on desktop; no automatic repeat, fallback, field mutation or message sending. No field values/labels or submitted text are logged. Insertion remains unverified even when event execution succeeds. Requires real iPhone/Xianyu validation after signing.

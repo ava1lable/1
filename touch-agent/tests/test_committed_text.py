@@ -36,7 +36,7 @@ int main(void) {
         self.assertIn('shouldRedact:YES',text)
         self.assertIn('initForTextInput',text)
         self.assertIn('initWithName:@"JHH Committed Input"',text)
-        self.assertLess(text.index('JHHLastSequence=sequence'),text.index('synthesizeEventWithRecord'))
+        self.assertLess(text.index('JHHLastSequence=sequence'),text.index('JHHSynthesizeCommittedText'))
         for word in ('textFields','textViews','setValue:','UIPasteboard','FBTypeText('):self.assertNotIn(word,text)
         self.assertIn('isText==isEditing',text)
 if __name__=='__main__':unittest.main()

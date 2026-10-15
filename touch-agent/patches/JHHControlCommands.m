@@ -19,6 +19,10 @@
 #include "JHHGeometryCache.h"
 #include "JHHKeyboardCandidates.h"
 #include "JHHCommittedText.h"
+#include "JHHTextReceipt.h"
+#import "XCUIDevice.h"
+#import "FBRunLoopSpinner.h"
+#import <CommonCrypto/CommonDigest.h>
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
@@ -59,8 +63,8 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.8.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"photo-upload-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.9.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"photo-upload-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -179,8 +183,40 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
     @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
-// Match upstream XCTest text-event synthesis, with a fixed event name and
-// redaction. No input-field discovery, setValue, clipboard or clear operation.
+// Read only focus flags and geometry; never read/log labels, values or text.
+static BOOL JHHTextKeyboardVisible(XCUIApplication *app) {
+ @try { id<FBXCElementSnapshot> k=app.keyboards.firstMatch.fb_standardSnapshot;
+  return !CGRectIsEmpty(k.frame)&&k.children.count>0; }
+ @catch(NSException *exception) { return NO; }
+}
+static BOOL JHHTextFocusObserved(XCUIApplication *app) {
+ @try {
+  id<FBXCElementSnapshot> root=app.fb_standardSnapshot;
+  NSMutableArray *pending=[NSMutableArray arrayWithObject:root];NSUInteger seen=0;
+  while(pending.count&&seen++<4096) {
+   id<FBXCElementSnapshot> node=pending.lastObject;[pending removeLastObject];
+   if(node.hasKeyboardFocus)return YES;
+   for(id child in node.children)if(pending.count<4096)[pending addObject:child];
+  }
+ } @catch(NSException *exception) { }
+ return NO; // Not observed is not proof of no focus in a custom accessibility tree.
+}
+static NSString *JHHTextAppToken(XCUIApplication *app) {
+ NSString *bundle=app.bundleID ?: @"unknown";NSData *data=[bundle dataUsingEncoding:NSUTF8StringEncoding];
+ unsigned char digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,digest);
+ return [NSString stringWithFormat:@"app#%02x%02x%02x%02x%02x",digest[0],digest[1],digest[2],digest[3],digest[4]];
+}
+static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *hadError) {
+ __block BOOL succeeded=NO;__block BOOL failed=NO;
+ [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)(void)) {
+  [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:event completion:(id)^(BOOL result,NSError *error) {
+   succeeded=result;failed=error!=nil;completion();
+  }];
+ }];
+ if(hadError)*hadError=failed;
+ return succeeded;
+}
+// Same redacted event mechanism, now with explicit execution and context receipts.
 + (id<FBResponsePayload>)committedText:(FBRouteRequest *)request
 {
   NSDictionary *a=request.arguments;
@@ -214,10 +250,12 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   XCUIApplication *app=XCUIApplication.fb_activeApplication;app.fb_shouldWaitForQuiescence=NO;
   UIInterfaceOrientation orientation=app.interfaceOrientation;
   if(orientation==UIInterfaceOrientationUnknown)return [self rejected:@"orientation_unavailable"];
-  id<FBXCElementSnapshot> keyboard;
-  @try {keyboard=app.keyboards.firstMatch.fb_standardSnapshot;}
-  @catch(NSException *exception){return [self rejected:@"keyboard_not_visible"];}
-  if(CGRectIsEmpty(keyboard.frame)||!keyboard.children.count)return [self rejected:@"keyboard_not_visible"];
+  pid_t beforePID=app.processID;
+  BOOL keyboardBefore=JHHTextKeyboardVisible(app),focusBefore=JHHTextFocusObserved(app);
+  NSString *appToken=JHHTextAppToken(app);
+  if(!JHHTextCanDispatch(keyboardBefore,focusBefore))
+    return FBResponseWithObject(@{@"accepted":@NO,@"code":@"keyboard_not_visible",@"sequence":@(sequence),
+      @"keyboardBefore":@(keyboardBefore),@"focusBefore":@(focusBefore),@"appToken":appToken,@"executionAttempted":@NO});
   double preflight=(CFAbsoluteTimeGetCurrent()-started)*1000;
   XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTextInput];
   if(![path respondsToSelector:@selector(typeText:atOffset:typingSpeed:shouldRedact:)]||
@@ -227,10 +265,20 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH Committed Input" interfaceOrientation:orientation];
   [event addPointerEventPath:path];
   JHHLastSequence=sequence;JHHMayBeComposing=NO;
-  NSError *error=nil;
-  if(![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])return [self rejected:@"synthesis_failed"];
-  return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"engine":@"committed-text-v1",
-    @"preflightMs":@(preflight),@"synthesisMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflight),
+  BOOL hadError=NO;
+  BOOL eventSucceeded=JHHSynthesizeCommittedText(event,&hadError);
+  double synthesis=(CFAbsoluteTimeGetCurrent()-started)*1000-preflight;
+  XCUIApplication *afterApp=XCUIApplication.fb_activeApplication;afterApp.fb_shouldWaitForQuiescence=NO;
+  BOOL sameApp=beforePID>0&&afterApp.processID==beforePID;
+  BOOL keyboardAfter=JHHTextKeyboardVisible(afterApp),focusAfter=JHHTextFocusObserved(afterApp);
+  JHHTextOutcome outcome=JHHTextClassify(eventSucceeded,hadError,sameApp,keyboardAfter,focusAfter,isEditing);
+  NSString *code=outcome==JHHTextEventFailed?@"text_event_failed":outcome==JHHTextAppChanged?@"text_app_changed":
+    outcome==JHHTextContextLost?@"text_context_lost":@"event_dispatched_unverified";
+  return FBResponseWithObject(@{@"accepted":@(outcome==JHHTextDispatched),@"code":code,@"sequence":@(sequence),@"engine":@"committed-text-v1",
+    @"receiptVersion":@1,@"executionAttempted":@YES,@"eventSucceeded":@(eventSucceeded),@"hadError":@(hadError),
+    @"sameApp":@(sameApp),@"appToken":appToken,@"keyboardBefore":@(keyboardBefore),@"focusBefore":@(focusBefore),
+    @"keyboardAfter":@(keyboardAfter),@"focusAfter":@(focusAfter),@"insertionVerified":@NO,
+    @"preflightMs":@(preflight),@"synthesisMs":@(synthesis),@"postflightMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflight-synthesis),
     @"characters":@(isText?text.length:0),@"editing":@(isEditing)});
 }
 
