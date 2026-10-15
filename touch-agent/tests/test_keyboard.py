@@ -35,7 +35,7 @@ int main(void) {
     def test_fast_batch_uses_single_snapshot_and_raw_event(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
         fast=source[source.index('+ (id<FBResponsePayload>)keys:'):]
-        self.assertEqual(fast.count('keyboard.fb_customSnapshot'),1)
+        self.assertEqual(fast.count('keyboard.fb_standardSnapshot'),1)
         self.assertNotIn('[key tap]',fast)
         self.assertNotIn('keyboard.exists',fast)
         self.assertNotIn('.hittable',fast)

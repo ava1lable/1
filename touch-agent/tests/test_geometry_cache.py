@@ -71,7 +71,7 @@ int main(void) {
         self.assertIn('NSProcessInfo.processInfo.systemUptime',source)
         self.assertIn('origin.screenPoint',source)
         self.assertIn('JHHGeometryCacheValidate(&JHHKeyboardCache',source)
-        self.assertIn('keyboard.fb_customSnapshot',source)
+        self.assertIn('keyboard.fb_standardSnapshot',source)
         self.assertNotIn('started-JHHCoordinateTime < 5',source)
 
 if __name__=='__main__':unittest.main()

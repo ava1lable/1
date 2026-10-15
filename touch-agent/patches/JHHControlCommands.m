@@ -17,6 +17,7 @@
 #include "JHHCoordinateTransform.h"
 #include "JHHKeyboardMap.h"
 #include "JHHGeometryCache.h"
+#include "JHHKeyboardCandidates.h"
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
@@ -25,6 +26,8 @@ static JHHTransform JHHCoordinates;
 static JHHGeometryCache JHHCoordinateCache;
 static JHHTransform JHHKeyboardCoordinates;
 static JHHGeometryCache JHHKeyboardCache;
+static pid_t JHHComposingPID;
+static BOOL JHHMayBeComposing;
 
 static JHHCacheRect JHHCacheFrame(CGRect frame)
 {
@@ -54,8 +57,8 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.5.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.6.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -164,6 +167,7 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   double preflight = (CFAbsoluteTimeGetCurrent() - started) * 1000;
   // Consume before synthesis. An exception/USB timeout must never cause replay.
   JHHLastSequence = sequence;
+  JHHMayBeComposing=NO; // A screen gesture changes the editing/candidate context.
   NSError *error = nil;
   if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])
     return [self rejected:@"synthesis_failed"];
@@ -192,7 +196,9 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)key:(FBRouteRequest *)request
 {
-  return [self keyArguments:request.arguments];
+  NSMutableDictionary *a=[request.arguments mutableCopy];
+  a[@"keys"]=@[@{@"usage":a[@"usage"]?:NSNull.null,@"modifiers":a[@"modifiers"]?:NSNull.null}];
+  return [self keysArguments:a];
 }
 
 + (NSArray<NSString *> *)keyAliases:(unsigned)usage modifiers:(unsigned)modifiers
@@ -259,6 +265,8 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   // Tap only a key inside the active system keyboard. No input-field search,
   // setValue, typeText, clipboard injection or implicit return/submit.
   [key tap];
+  JHHComposingPID=app.processID;
+  if(usage>=4&&usage<=29)JHHMayBeComposing=YES;else if(usage!=42)JHHMayBeComposing=NO;
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"engine":@"native-keyboard-v1",
     @"detectionMs":@(detectionMs), @"executionMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs)});
 }
@@ -284,9 +292,51 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   return nil;
 }
 
++ (NSArray<id<FBXCElementSnapshot>> *)visibleChineseCandidates:(id<FBXCElementSnapshot>)snapshot
+{
+  NSMutableArray<id<FBXCElementSnapshot>> *all=[NSMutableArray new];
+  __block double firstLetterY=INFINITY;
+  NSSet *functions=[NSSet setWithArray:@[@"完成",@"发送",@"搜索",@"前往",@"下一项",@"下一步",@"空格",@"换行",@"删除",@"退格",@"粘贴",@"拷贝",@"复制",@"撤销",@"重做",@"自动填充",@"扫描文本",@"表情",@"符号",@"拼音",@"手写",@"候选词",@"候選字",@"候选字",@"展开候选",@"收起候选"]];
+  [snapshot enumerateDescendantsUsingBlock:^(id<FBXCElementSnapshot> node) {
+    NSString *label=node.label?:@"";
+    if(node.elementType==XCUIElementTypeKey && label.length==1) {
+      unichar c=[label characterAtIndex:0];
+      if((c>='a'&&c<='z')||(c>='A'&&c<='Z'))firstLetterY=fmin(firstLetterY,CGRectGetMinY(node.frame));
+    }
+    if(node.elementType==XCUIElementTypeKey||node.elementType==XCUIElementTypeButton
+        ||node.elementType==XCUIElementTypeCell||node.elementType==XCUIElementTypeStaticText) {
+      if(all.count<256)[all addObject:node];
+    }
+  }];
+  JHHCandidate candidates[256];
+  for(NSUInteger i=0;i<all.count;i++) {
+    id<FBXCElementSnapshot> node=all[i];NSString *label=node.label?:@"";
+    BOOL han=NO;
+    for(NSUInteger j=0;j<label.length;j++) {
+      unsigned cp=[label characterAtIndex:j];
+      if(cp>=0xd800&&cp<=0xdbff&&j+1<label.length) {
+        unsigned low=[label characterAtIndex:j+1];
+        if(low>=0xdc00&&low<=0xdfff){cp=0x10000+((cp-0xd800)<<10)+(low-0xdc00);j++;}
+      }
+      if(JHHIsHan(cp)){han=YES;break;}
+    }
+    NSString *identifier=node.identifier.lowercaseString?:@"";
+    BOOL explicit=[identifier containsString:@"candidate"]||[identifier containsString:@"候选"]||[identifier containsString:@"候選"];
+    candidates[i]=(JHHCandidate){JHHCacheFrame(node.frame),node.enabled,han,[functions containsObject:label],explicit};
+  }
+  size_t indexes[64];size_t count=JHHVisibleCandidates(candidates,all.count,JHHCacheFrame(snapshot.frame),firstLetterY,indexes,64);
+  NSMutableArray *result=[NSMutableArray new];
+  for(size_t i=0;i<count;i++)[result addObject:all[indexes[i]]];
+  return result;
+}
+
 + (id<FBResponsePayload>)keys:(FBRouteRequest *)request
 {
-  NSDictionary *a = request.arguments;
+  return [self keysArguments:request.arguments];
+}
+
++ (id<FBResponsePayload>)keysArguments:(NSDictionary *)a
+{
   if (![a[@"instance"] isKindOfClass:NSString.class] || ![a[@"instance"] isEqual:JHHInstance])
     return [self rejected:@"agent_restarted"];
   if (![self number:a[@"sequence"] min:1 max:9007199254740991.0] ||
@@ -316,12 +366,26 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   if (orientation == UIInterfaceOrientationUnknown) return [self rejected:@"orientation_unavailable"];
   XCUIElement *keyboard = app.keyboards.firstMatch;
   id<FBXCElementSnapshot> snapshot;
-  @try { snapshot = keyboard.fb_customSnapshot; }
+  @try { snapshot = keyboard.fb_standardSnapshot; }
   @catch (NSException *exception) { return [self rejected:@"keyboard_not_visible"]; }
   CGRect frame = snapshot.frame;
   if (CGRectIsEmpty(frame) || snapshot.children.count == 0) return [self rejected:@"keyboard_not_visible"];
+  if(JHHComposingPID!=app.processID){JHHComposingPID=app.processID;JHHMayBeComposing=NO;}
   NSMutableArray *nodes = [NSMutableArray new];
-  for (NSDictionary *item in keys) {
+  BOOL selectingCandidate=NO;
+  unsigned candidateIndex=0;
+  NSDictionary *single=keys.count==1 ? keys.firstObject : nil;
+  if(single && JHHMayBeComposing) {
+    candidateIndex=JHHKeyboardCandidateNumber([single[@"usage"] unsignedIntValue],[single[@"modifiers"] unsignedIntValue]);
+    if(candidateIndex) {
+      NSArray *candidates=[self visibleChineseCandidates:snapshot];
+      if(candidates.count) {
+        if(candidateIndex>candidates.count)return [self rejected:@"candidate_unavailable"];
+        [nodes addObject:candidates[candidateIndex-1]];selectingCandidate=YES;
+      }
+    }
+  }
+  for (NSDictionary *item in selectingCandidate ? @[] : keys) {
     id<FBXCElementSnapshot> node = [self snapshotKey:snapshot
       aliases:[self keyAliases:[item[@"usage"] unsignedIntValue] modifiers:[item[@"modifiers"] unsignedIntValue]]];
     if (node == nil) {
@@ -368,7 +432,7 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
     JHHPoint point;
     if (!JHHTransformMap(JHHKeyboardCoordinates,x,y,&point)) return [self rejected:@"geometry_unavailable"];
     // Sequential complete taps, matching upstream W3C's separate pointer paths.
-    double offset=index++*0.06;
+    double offset=index++*0.045;
     XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(point.x,point.y) offset:offset];
     [path liftUpAtOffset:offset+0.035];
     [event addPointerEventPath:path];
@@ -376,8 +440,14 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   double preflightMs=(CFAbsoluteTimeGetCurrent()-started)*1000;
   JHHLastSequence = sequence;
   NSError *error=nil;
-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) return [self rejected:@"synthesis_failed"];
+  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) { JHHMayBeComposing=NO; return [self rejected:@"synthesis_failed"]; }
+  unsigned lastUsage=[keys.lastObject[@"usage"] unsignedIntValue];
+  if(selectingCandidate)JHHMayBeComposing=NO;
+  else if(lastUsage>=4&&lastUsage<=29)JHHMayBeComposing=YES;
+  else if(lastUsage!=42)JHHMayBeComposing=NO;
   return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"keyCount":@(keys.count),
+    @"keyAction":selectingCandidate ? @"candidate" : @"key",@"candidateIndex":@(selectingCandidate?candidateIndex:0),
+    @"snapshotEngine":@"standard",@"keyIntervalMs":@45,
     @"engine":@"native-keyboard-batch-v1",@"snapshotMs":@(snapshotMs),@"geometryCached":@(geometryCached),
     @"anchorResolutionMs":@(anchorMs),@"geometryCacheReason":cacheReason,
     @"geometryMs":@(preflightMs-snapshotMs),@"synthesisMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflightMs)});
