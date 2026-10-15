@@ -4,7 +4,11 @@
 #import "FBResponsePayload.h"
 #import "XCUIApplication+FBHelpers.h"
 #import "XCUIApplication+FBQuiescence.h"
+#import "FBXCTestDaemonsProxy.h"
+#import "XCSynthesizedEventRecord.h"
+#import "XCPointerEventPath.h"
 #import <XCTest/XCTest.h>
+#import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #include <math.h>
 
@@ -27,7 +31,7 @@ static unsigned long long JHHLastSequence;
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.0.0", @"protocol":@1,
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.1.0", @"protocol":@1,
     @"instance":JHHInstance, @"ready":@YES, @"features":@[@"tap", @"swipe"]});
 }
 
@@ -67,32 +71,52 @@ static unsigned long long JHHLastSequence;
   CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
   XCUIApplication *app = XCUIApplication.fb_activeApplication;
   app.fb_shouldWaitForQuiescence = NO;
-  CGRect frame = app.frame;
-  if (!isfinite(frame.size.width) || !isfinite(frame.size.height) || frame.size.width < 1 || frame.size.height < 1)
+  UIInterfaceOrientation orientation = app.interfaceOrientation;
+  double detectionMs = (CFAbsoluteTimeGetCurrent() - started) * 1000;
+  if (orientation == UIInterfaceOrientationUnknown) return [self rejected:@"orientation_unavailable"];
+  BOOL landscape = UIInterfaceOrientationIsLandscape(orientation);
+  CGSize natural = UIScreen.mainScreen.fixedCoordinateSpace.bounds.size;
+  CGSize size = landscape ? CGSizeMake(fmax(natural.width, natural.height), fmin(natural.width, natural.height))
+                          : CGSizeMake(fmin(natural.width, natural.height), fmax(natural.width, natural.height));
+  if (!isfinite(size.width) || !isfinite(size.height) || size.width < 1 || size.height < 1)
     return [self rejected:@"screen_unavailable"];
-  if ((frame.size.width > frame.size.height) != [a[@"landscape"] boolValue])
+  if (landscape != [a[@"landscape"] boolValue])
     return [self rejected:@"orientation_changed"];
 
-  // Anchor to the active application's full frame. Do not search the element
-  // tree or find an input field. Coordinates arrive normalized to the actual
-  // displayed video rectangle, excluding desktop letterbox margins.
-  XCUICoordinate *origin = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
-  double x = fmin([a[@"x"] doubleValue], 0.999999) * frame.size.width;
-  double y = fmin([a[@"y"] doubleValue], 0.999999) * frame.size.height;
-  double tx = fmin([a[@"toX"] doubleValue], 0.999999) * frame.size.width;
-  double ty = fmin([a[@"toY"] doubleValue], 0.999999) * frame.size.height;
-  XCUICoordinate *from = [origin coordinateWithOffset:CGVectorMake(x, y)];
-  XCUICoordinate *to = [origin coordinateWithOffset:CGVectorMake(tx, ty)];
+  // Use oriented screen points directly. Resolving app.frame and three
+  // XCUICoordinates invokes accessibility snapshots on each gesture. The
+  // event record carries interface orientation, including upside-down/right.
+  CGPoint from = CGPointMake(fmin([a[@"x"] doubleValue], 0.999999) * size.width,
+                             fmin([a[@"y"] doubleValue], 0.999999) * size.height);
+  CGPoint to = CGPointMake(fmin([a[@"toX"] doubleValue], 0.999999) * size.width,
+                           fmin([a[@"toY"] doubleValue], 0.999999) * size.height);
+  XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"JHH Touch"
+                                                                         interfaceOrientation:orientation];
+  XCPointerEventPath *path = [[XCPointerEventPath alloc] initForTouchAtPoint:from offset:0];
+  if ([kind isEqual:@"tap"]) {
+    [path liftUpAtOffset:0.045];
+  } else {
+    // Manual remote interaction needs a short, bounded swipe. Do not replay
+    // the entire desktop hold time as a second long gesture on the phone.
+    double duration = fmax(0.08, fmin(0.35, [a[@"duration"] doubleValue]));
+    NSUInteger steps = MAX(2, (NSUInteger)ceil(duration * 60));
+    for (NSUInteger i = 1; i <= steps; i++) {
+      double fraction = (double)i / steps;
+      [path moveToPoint:CGPointMake(from.x + (to.x - from.x) * fraction,
+                                   from.y + (to.y - from.y) * fraction)
+              atOffset:0.015 + duration * fraction];
+    }
+    [path liftUpAtOffset:0.015 + duration];
+  }
+  [event addPointerEventPath:path];
   double preflight = (CFAbsoluteTimeGetCurrent() - started) * 1000;
   // Consume before synthesis. An exception/USB timeout must never cause replay.
   JHHLastSequence = sequence;
-  if ([kind isEqual:@"tap"]) {
-    [from tap];
-  } else {
-    CGFloat velocity = fmax(50, fmin(5000, hypot(tx - x, ty - y) / [a[@"duration"] doubleValue]));
-    [from pressForDuration:0.03 thenDragToCoordinate:to withVelocity:velocity thenHoldForDuration:0];
-  }
+  NSError *error = nil;
+  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])
+    return [self rejected:@"synthesis_failed"];
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"preflightMs":@(preflight),
+    @"detectionMs":@(detectionMs), @"eventBuildMs":@(preflight - detectionMs), @"engine":@"screen-event-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
 @end
