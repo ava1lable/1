@@ -42,4 +42,4 @@ int main(void) {
         self.assertIn('keys.count > 8',fast)
         self.assertIn('keys.count > 1 && (usage < 4 || usage > 29 || modifiers != 0)',fast)
         self.assertLess(fast.index('JHHLastSequence = sequence;'),fast.index('[FBXCTestDaemonsProxy synthesizeEventWithRecord:'))
-        self.assertIn('CGRectEqualToRect(JHHKeyboardFrame,frame)',fast)
+        self.assertIn('JHHGeometryCacheValidate(&JHHKeyboardCache',fast)

@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 SOURCE_URL = 'https://codeload.github.com/appium/WebDriverAgent/zip/refs/tags/v12.0.0'
 SOURCE_SHA256 = '9c435b122b93d0f88cbf06b65eec5756d30c12d90a73b2d1c8caeef00edf540e'
-VERSION = '1.4.0'
+VERSION = '1.5.0'
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -145,9 +145,9 @@ def package(app, source, artifacts):
     test_info = plistlib.loads(test_info_file.read_bytes())
     main_id, test_id = bundle_identifiers('com.jinghaohao.touch.runner')
     info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='镜好好触控', CFBundleName='JHHTouchAgent',
-                CFBundleShortVersionString=VERSION, CFBundleVersion='5', MinimumOSVersion='16.0',
+                CFBundleShortVersionString=VERSION, CFBundleVersion='6', MinimumOSVersion='16.0',
                 JHHComponent='JHH-Touch-Agent', JHHProtocolVersion=1)
-    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='5')
+    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='6')
     for data in (info, test_info):
         data.pop('NSPhotoLibraryUsageDescription', None)
         data.pop('NSPhotoLibraryAddUsageDescription', None)
@@ -186,7 +186,7 @@ def package(app, source, artifacts):
             if path.is_file(): z.write(path, 'touch-agent/' + path.relative_to(ROOT).as_posix())
     result = {'component':'JHH-Touch-Agent','version':VERSION,'protocol':1,'upstream':'Appium WebDriverAgent 12.0.0',
               'upstreamSha256':SOURCE_SHA256,'bundleIdentifier':main_id,'testBundleIdentifier':test_id,
-              'features':['tap','swipe','native-keyboard-v1','native-keyboard-batch-v1'],'signed':False,'phoneTested':False,'ipa':ipa.name,'sha256':digest(ipa),
+              'features':['tap','swipe','native-keyboard-v1','native-keyboard-batch-v1','geometry-cache-v1'],'signed':False,'phoneTested':False,'ipa':ipa.name,'sha256':digest(ipa),
               'files':files,'patches':{p.name:digest(p) for p in (ROOT/'patches').glob('*')}}
     (artifacts / 'build-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     (artifacts / 'SHA256SUMS.txt').write_text(result['sha256']+'  '+ipa.name+'\n',encoding='utf-8')

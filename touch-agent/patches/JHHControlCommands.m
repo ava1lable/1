@@ -16,21 +16,26 @@
 #include <math.h>
 #include "JHHCoordinateTransform.h"
 #include "JHHKeyboardMap.h"
+#include "JHHGeometryCache.h"
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
 static unsigned long long JHHLastSequence;
 static JHHTransform JHHCoordinates;
-static pid_t JHHCoordinatePID;
-static UIInterfaceOrientation JHHCoordinateOrientation;
-static CFAbsoluteTime JHHCoordinateTime;
-static BOOL JHHHasCoordinates;
+static JHHGeometryCache JHHCoordinateCache;
 static JHHTransform JHHKeyboardCoordinates;
-static pid_t JHHKeyboardPID;
-static UIInterfaceOrientation JHHKeyboardOrientation;
-static CGRect JHHKeyboardFrame;
-static CFAbsoluteTime JHHKeyboardTime;
-static BOOL JHHHasKeyboardCoordinates;
+static JHHGeometryCache JHHKeyboardCache;
+
+static JHHCacheRect JHHCacheFrame(CGRect frame)
+{
+  return (JHHCacheRect){frame.origin.x,frame.origin.y,frame.size.width,frame.size.height};
+}
+static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrientation orientation)
+{
+  UIScreen *screen=UIScreen.mainScreen;
+  return (JHHGeometryKey){app.processID,(int32_t)orientation,JHHCacheFrame(screen.bounds),
+    JHHCacheFrame(screen.nativeBounds),screen.scale};
+}
 
 + (void)initialize
 {
@@ -49,8 +54,8 @@ static BOOL JHHHasKeyboardCoordinates;
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.4.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.5.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -99,10 +104,23 @@ static BOOL JHHHasKeyboardCoordinates;
   // Use XCTest's own screenPoint basis, as upstream W3C synthesis does.
   // UIScreen bounds may differ from the application's XCTest coordinate
   // origin/scale. Cache only geometry, never an element or an input target.
-  BOOL geometryCached = JHHHasCoordinates && JHHCoordinatePID == app.processID
-    && JHHCoordinateOrientation == orientation && started-JHHCoordinateTime < 5;
-  if (!geometryCached) {
-    JHHHasCoordinates = NO;
+  double cacheNow=NSProcessInfo.processInfo.systemUptime;
+  JHHGeometryKey geometryKey=JHHCurrentGeometryKey(app,orientation);
+  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&JHHCoordinateCache,geometryKey,cacheNow);
+  NSString *cacheReason=[NSString stringWithUTF8String:JHHGeometryCacheReason(cachePlan)];
+  BOOL geometryCached=cachePlan==JHHCacheHit;
+  double validationMs=0,anchorMs=0;
+  if(cachePlan==JHHCacheCheckFrame) {
+    CFAbsoluteTime validationStarted=CFAbsoluteTimeGetCurrent();
+    CGRect frame=app.frame;
+    geometryCached=JHHGeometryCacheValidate(&JHHCoordinateCache,geometryKey,JHHCacheFrame(frame),
+      NSProcessInfo.processInfo.systemUptime);
+    validationMs=(CFAbsoluteTimeGetCurrent()-validationStarted)*1000;
+    if(!geometryCached)cacheReason=@"frame_changed";
+  }
+  if(!geometryCached) {
+    JHHCoordinateCache.valid=0;
+    CFAbsoluteTime anchorStarted=CFAbsoluteTimeGetCurrent();
     XCUICoordinate *origin = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
     CGPoint p0 = origin.screenPoint;
     CGPoint px = [app coordinateWithNormalizedOffset:CGVectorMake(0.5, 0)].screenPoint;
@@ -110,8 +128,13 @@ static BOOL JHHHasKeyboardCoordinates;
     if (!JHHTransformCreate((JHHPoint){p0.x,p0.y}, (JHHPoint){px.x,px.y},
                             (JHHPoint){py.x,py.y}, &JHHCoordinates))
       return [self rejected:@"geometry_unavailable"];
-    JHHCoordinatePID = app.processID; JHHCoordinateOrientation = orientation;
-    JHHCoordinateTime = CFAbsoluteTimeGetCurrent(); JHHHasCoordinates = YES;
+    // The just-resolved anchor snapshot supplies the validation baseline;
+    // reading its frame does not issue another remote XCTest request.
+    id<FBXCElementSnapshot> root=app.fb_cachedSnapshot;
+    CGRect frame=root ? root.frame : app.frame;
+    if(!JHHGeometryCacheLearn(&JHHCoordinateCache,geometryKey,JHHCacheFrame(frame),
+        NSProcessInfo.processInfo.systemUptime))return [self rejected:@"geometry_unavailable"];
+    anchorMs=(CFAbsoluteTimeGetCurrent()-anchorStarted)*1000;
   }
   JHHPoint fromPoint, toPoint;
   if (!JHHTransformMap(JHHCoordinates, [a[@"x"] doubleValue], [a[@"y"] doubleValue], &fromPoint)
@@ -146,6 +169,7 @@ static BOOL JHHHasKeyboardCoordinates;
     return [self rejected:@"synthesis_failed"];
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"preflightMs":@(preflight),
     @"detectionMs":@(detectionMs), @"geometryMs":@(geometryMs), @"geometryCached":@(geometryCached),
+    @"geometryValidationMs":@(validationMs), @"anchorResolutionMs":@(anchorMs), @"geometryCacheReason":cacheReason,
     @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
@@ -313,18 +337,27 @@ static BOOL JHHHasKeyboardCoordinates;
     [nodes addObject:node];
   }
   double snapshotMs = (CFAbsoluteTimeGetCurrent()-started)*1000;
-  BOOL geometryCached = JHHHasKeyboardCoordinates && JHHKeyboardPID == app.processID
-    && JHHKeyboardOrientation == orientation && CGRectEqualToRect(JHHKeyboardFrame,frame)
-    && started-JHHKeyboardTime < 5;
-  if (!geometryCached) {
-    JHHHasKeyboardCoordinates = NO;
+  JHHGeometryKey geometryKey=JHHCurrentGeometryKey(app,orientation);
+  double cacheNow=NSProcessInfo.processInfo.systemUptime;
+  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&JHHKeyboardCache,geometryKey,cacheNow);
+  // This batch already has a fresh keyboard snapshot. Validate its frame every
+  // time; never cache key targets or the candidate/layout snapshot.
+  BOOL geometryCached=(cachePlan==JHHCacheHit||cachePlan==JHHCacheCheckFrame)
+    && JHHGeometryCacheValidate(&JHHKeyboardCache,geometryKey,JHHCacheFrame(frame),cacheNow);
+  NSString *cacheReason=[NSString stringWithUTF8String:JHHGeometryCacheReason(cachePlan)];
+  if(!geometryCached && (cachePlan==JHHCacheHit||cachePlan==JHHCacheCheckFrame))cacheReason=@"frame_changed";
+  double anchorMs=0;
+  if(!geometryCached) {
+    JHHKeyboardCache.valid=0;
+    CFAbsoluteTime anchorStarted=CFAbsoluteTimeGetCurrent();
     CGPoint p0 = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0,0)].screenPoint;
     CGPoint px = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0.5,0)].screenPoint;
     CGPoint py = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0,0.5)].screenPoint;
     if (!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&JHHKeyboardCoordinates))
       return [self rejected:@"geometry_unavailable"];
-    JHHKeyboardFrame=frame; JHHKeyboardPID=app.processID; JHHKeyboardOrientation=orientation;
-    JHHKeyboardTime=started; JHHHasKeyboardCoordinates=YES;
+    if(!JHHGeometryCacheLearn(&JHHKeyboardCache,geometryKey,JHHCacheFrame(frame),
+        NSProcessInfo.processInfo.systemUptime))return [self rejected:@"geometry_unavailable"];
+    anchorMs=(CFAbsoluteTimeGetCurrent()-anchorStarted)*1000;
   }
   XCSynthesizedEventRecord *event = [[XCSynthesizedEventRecord alloc] initWithName:@"JHH Keyboard"
     interfaceOrientation:orientation];
@@ -346,6 +379,7 @@ static BOOL JHHHasKeyboardCoordinates;
   if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) return [self rejected:@"synthesis_failed"];
   return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"keyCount":@(keys.count),
     @"engine":@"native-keyboard-batch-v1",@"snapshotMs":@(snapshotMs),@"geometryCached":@(geometryCached),
+    @"anchorResolutionMs":@(anchorMs),@"geometryCacheReason":cacheReason,
     @"geometryMs":@(preflightMs-snapshotMs),@"synthesisMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflightMs)});
 }
 
