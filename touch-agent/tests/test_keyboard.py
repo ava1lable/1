@@ -31,3 +31,15 @@ int main(void) {
         self.assertIn('app.keyboards.firstMatch',key)
         self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('[layoutKey tap]'))
         self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('[key tap]'))
+
+    def test_fast_batch_uses_single_snapshot_and_raw_event(self):
+        source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
+        fast=source[source.index('+ (id<FBResponsePayload>)keys:'):]
+        self.assertEqual(fast.count('keyboard.fb_customSnapshot'),1)
+        self.assertNotIn('[key tap]',fast)
+        self.assertNotIn('keyboard.exists',fast)
+        self.assertNotIn('.hittable',fast)
+        self.assertIn('keys.count > 8',fast)
+        self.assertIn('keys.count > 1 && (usage < 4 || usage > 29 || modifiers != 0)',fast)
+        self.assertLess(fast.index('JHHLastSequence = sequence;'),fast.index('[FBXCTestDaemonsProxy synthesizeEventWithRecord:'))
+        self.assertIn('CGRectEqualToRect(JHHKeyboardFrame,frame)',fast)
