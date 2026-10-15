@@ -18,6 +18,7 @@
 #include "JHHKeyboardMap.h"
 #include "JHHGeometryCache.h"
 #include "JHHKeyboardCandidates.h"
+#include "JHHCommittedText.h"
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
@@ -52,13 +53,14 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
     [[[FBRoute POST:@"/jhh/v1/gesture"] withoutSession] respondWithTarget:self action:@selector(gesture:)],
     [[[FBRoute POST:@"/jhh/v1/key"] withoutSession] respondWithTarget:self action:@selector(key:)],
     [[[FBRoute POST:@"/jhh/v1/keys"] withoutSession] respondWithTarget:self action:@selector(keys:)],
+    [[[FBRoute POST:@"/jhh/v1/text"] withoutSession] respondWithTarget:self action:@selector(committedText:)],
   ];
 }
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.6.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.7.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -177,6 +179,61 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
     @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
+// Match upstream XCTest text-event synthesis, with a fixed event name and
+// redaction. No input-field discovery, setValue, clipboard or clear operation.
++ (id<FBResponsePayload>)committedText:(FBRouteRequest *)request
+{
+  NSDictionary *a=request.arguments;
+  if(![a[@"instance"] isKindOfClass:NSString.class]||![a[@"instance"] isEqual:JHHInstance])return [self rejected:@"agent_restarted"];
+  if(![self number:a[@"sequence"] min:1 max:9007199254740991.0]||floor([a[@"sequence"] doubleValue])!=[a[@"sequence"] doubleValue])return [self rejected:@"invalid_sequence"];
+  unsigned long long sequence=[a[@"sequence"] unsignedLongLongValue];
+  if(sequence<=JHHLastSequence)return [self rejected:@"duplicate_or_stale"];
+  BOOL isText=a[@"text"]!=nil,isEditing=a[@"editingKey"]!=nil;
+  if(isText==isEditing)return [self rejected:@"invalid_text"];
+  NSString *text=nil,*editing=nil;
+  if(isText) {
+    text=a[@"text"];
+    if(![text isKindOfClass:NSString.class]||text.length>4096)return [self rejected:@"invalid_text"];
+    uint16_t units[4096];[text getCharacters:units range:NSMakeRange(0,text.length)];
+    if(!JHHCommittedTextValid(units,text.length))return [self rejected:@"invalid_text"];
+  } else {
+    if(![self number:a[@"editingKey"] min:0 max:255]||floor([a[@"editingKey"] doubleValue])!=[a[@"editingKey"] doubleValue])return [self rejected:@"unsupported_editing_key"];
+    switch([a[@"editingKey"] unsignedIntValue]) {
+      case 8:editing=XCUIKeyboardKeyDelete;break;
+      case 9:editing=XCUIKeyboardKeyTab;break;
+      case 13:editing=XCUIKeyboardKeyReturn;break;
+      case 37:editing=XCUIKeyboardKeyLeftArrow;break;
+      case 38:editing=XCUIKeyboardKeyUpArrow;break;
+      case 39:editing=XCUIKeyboardKeyRightArrow;break;
+      case 40:editing=XCUIKeyboardKeyDownArrow;break;
+      case 46:editing=XCUIKeyboardKeyForwardDelete;break;
+      default:return [self rejected:@"unsupported_editing_key"];
+    }
+  }
+  CFAbsoluteTime started=CFAbsoluteTimeGetCurrent();
+  XCUIApplication *app=XCUIApplication.fb_activeApplication;app.fb_shouldWaitForQuiescence=NO;
+  UIInterfaceOrientation orientation=app.interfaceOrientation;
+  if(orientation==UIInterfaceOrientationUnknown)return [self rejected:@"orientation_unavailable"];
+  id<FBXCElementSnapshot> keyboard;
+  @try {keyboard=app.keyboards.firstMatch.fb_standardSnapshot;}
+  @catch(NSException *exception){return [self rejected:@"keyboard_not_visible"];}
+  if(CGRectIsEmpty(keyboard.frame)||!keyboard.children.count)return [self rejected:@"keyboard_not_visible"];
+  double preflight=(CFAbsoluteTimeGetCurrent()-started)*1000;
+  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTextInput];
+  if(![path respondsToSelector:@selector(typeText:atOffset:typingSpeed:shouldRedact:)]||
+     ![path respondsToSelector:@selector(typeKey:modifiers:atOffset:)])return [self rejected:@"text_input_unavailable"];
+  if(isText)[path typeText:text atOffset:0 typingSpeed:60 shouldRedact:YES];
+  else [path typeKey:editing modifiers:0 atOffset:0];
+  XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH Committed Input" interfaceOrientation:orientation];
+  [event addPointerEventPath:path];
+  JHHLastSequence=sequence;JHHMayBeComposing=NO;
+  NSError *error=nil;
+  if(![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])return [self rejected:@"synthesis_failed"];
+  return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"engine":@"committed-text-v1",
+    @"preflightMs":@(preflight),@"synthesisMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflight),
+    @"characters":@(isText?text.length:0),@"editing":@(isEditing)});
+}
+
 + (XCUIElement *)keyboardKey:(XCUIElement *)keyboard aliases:(NSArray<NSString *> *)aliases
 {
   NSPredicate *predicate = [NSPredicate predicateWithFormat:@"label IN %@ OR identifier IN %@", aliases, aliases];

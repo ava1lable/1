@@ -16,10 +16,10 @@ class PackageBoundaries(unittest.TestCase):
                   '_CodeSignature/CodeResources','embedded.mobileprovision'):
             self.assertFalse(module.allowed_payload(Path(p)))
         self.assertTrue(module.allowed_payload(Path('PlugIns/Runner.xctest/Runner')))
-    def test_only_four_routes(self):
+    def test_only_five_routes(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
-        self.assertEqual(source.count('[FBRoute '),4)
-        for forbidden in ('typeText:', 'setValue:', 'PHPhotoLibrary', 'screenshot'):
+        self.assertEqual(source.count('[FBRoute '),5)
+        for forbidden in ('setValue:', 'PHPhotoLibrary', 'screenshot'):
             self.assertNotIn(forbidden,source)
     def test_replay_consumed_before_synthesis(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')

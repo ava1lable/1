@@ -52,7 +52,7 @@ int main(void) {
         self.assertIn('candidateIndex>candidates.count',s)
         self.assertIn('JHHMayBeComposing=NO',s)
         self.assertIn('JHHComposingPID!=app.processID',s)
-        self.assertNotIn('typeText:',s)
+        self.assertNotIn('typeText:',s[s.index('+ (XCUIElement *)keyboardKey:'):])
         self.assertNotIn('setValue:',s)
         self.assertNotIn('UIPasteboard',s)
         self.assertIn('keyboard.fb_standardSnapshot',s)
