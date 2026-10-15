@@ -21,6 +21,7 @@
 #include "JHHCommittedText.h"
 #include "JHHTextReceipt.h"
 #import "XCUIDevice.h"
+#import "XCTRunnerDaemonSession.h"
 #import "FBRunLoopSpinner.h"
 #import <CommonCrypto/CommonDigest.h>
 
