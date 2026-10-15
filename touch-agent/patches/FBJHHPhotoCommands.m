@@ -121,7 +121,7 @@ static BOOL JHHValidImage(NSDictionary *job) {
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request {
   JHHInitialize(); JHHPrune();
   return FBResponseWithObject(@{@"ok": @YES, @"apiVersion": @1, @"component": @"MirrorGoodGood-WDA-Photos",
-    @"authorization": JHHAuthorization(), @"maxFileBytes": @(JHHMaxBytes), @"chunkBytes": @(JHHChunkBytes), @"saveAcknowledgements": @YES});
+    @"authorization": JHHAuthorization(), @"maxFileBytes": @(JHHMaxBytes), @"chunkBytes": @(JHHChunkBytes), @"saveAcknowledgements": @YES, @"touchAgentPhotos": @YES});
 }
 + (id<FBResponsePayload>)authorize:(FBRouteRequest *)request {
   if ([JHHAuthorization() isEqualToString:@"notDetermined"]) {
