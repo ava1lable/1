@@ -85,32 +85,32 @@ static id<FBResponsePayload> JHHClipboardReply(BOOL accepted,NSString *code,unsi
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
  CGPoint point=[prepared[@"point"] CGPointValue];
  if(CGRectContainsPoint(CGRectInset(keyboard,-4,-4),point))return JHHClipboardReply(NO,@"clipboard_target_required",sequence,YES,NO);
- // One bounded long press on the last explicit input position; no field lookup
- // or value assignment. Only a real system menu's exact Paste item is tapped.
- XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH Paste Menu" interfaceOrientation:app.interfaceOrientation];
- XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:point offset:0];
- [path liftUpAtOffset:.65];[event addPointerEventPath:path];BOOL hadError=NO;
- if(!JHHSynthesizeCommittedText(event,&hadError)||hadError)return JHHClipboardReply(NO,@"clipboard_menu_failed",sequence,YES,NO);
- NSArray *names=@[@"粘贴",@"貼上",@"粘貼",@"Paste"];
- NSPredicate *predicate=[NSPredicate predicateWithFormat:@"label IN %@",names];
- XCUIElement *paste=nil;NSUInteger matches=0;
- // The menu may animate briefly; only poll discovery, never repeat the press.
- double until=NSProcessInfo.processInfo.systemUptime+1.2;
- do {
-  if(XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||!clipboardSame)
-   return JHHClipboardReply(NO,@"clipboard_target_changed",sequence,YES,NO);
-  matches=0;paste=nil;
-  NSArray *items=[[app.menuItems matchingPredicate:predicate] allElementsBoundByIndex];
-  if(!items.count)items=[[[app.menus descendantsMatchingType:XCUIElementTypeButton] matchingPredicate:predicate] allElementsBoundByIndex];
-  for(XCUIElement *item in items)if(item.exists&&item.hittable){paste=item;matches++;}
-  if(matches)break;
-  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
- } while(NSProcessInfo.processInfo.systemUptime<until);
- if(matches!=1)return JHHClipboardReply(NO,@"clipboard_menu_unavailable",sequence,YES,NO);
- if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue])
+ // Use iPhone's system three-finger pinch-out Paste gesture. Do not long
+ // press a stale text point: doing so can relocate the caret or select/replace
+ // existing words on each subsequent commit. Never auto-fallback after a gesture.
+ CGRect appFrame=app.frame;JHHClipboardPinch pinch;
+ if(!JHHClipboardPastePinch(appFrame.size.width,appFrame.size.height,CGRectGetMinY(keyboard)-CGRectGetMinY(appFrame)-12,&pinch))
+  return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
+ CGPoint p0=[app coordinateWithNormalizedOffset:CGVectorMake(0,0)].screenPoint;
+ CGPoint px=[app coordinateWithNormalizedOffset:CGVectorMake(.5,0)].screenPoint;
+ CGPoint py=[app coordinateWithNormalizedOffset:CGVectorMake(0,.5)].screenPoint;JHHTransform transform;
+ if(!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&transform))
+  return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
+ XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH System Paste" interfaceOrientation:app.interfaceOrientation];
+ for(int finger=0;finger<3;finger++){
+  JHHPoint from,to;
+  if(!JHHTransformMap(transform,pinch.sx[finger],pinch.sy[finger],&from)||!JHHTransformMap(transform,pinch.ex[finger],pinch.ey[finger],&to))
+   return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
+  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(from.x,from.y) offset:0];
+  for(int step=1;step<=6;step++){
+   double f=step/6.0;[path moveToPoint:CGPointMake(from.x+(to.x-from.x)*f,from.y+(to.y-from.y)*f) atOffset:.04+.28*f];
+  }
+  [path liftUpAtOffset:.36];[event addPointerEventPath:path];
+ }
+ if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||app.interfaceOrientation!=[prepared[@"orientation"] integerValue])
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
- [paste tap]; // Never tap Send/Return, accept a permission dialog or retry.
+ BOOL hadError=NO;
+ if(!JHHSynthesizeCommittedText(event,&hadError)||hadError)return JHHClipboardReply(NO,@"clipboard_gesture_failed",sequence,YES,NO);
  JHHMayBeComposing=NO;
- return JHHClipboardReply(YES,@"paste_invoked_unverified",sequence,YES,YES);
+ return JHHClipboardReply(YES,@"paste_gesture_invoked_unverified",sequence,YES,YES);
 }
-

@@ -14,6 +14,12 @@ int main(void){
  assert(!JHHClipboardFresh(9,10,20));assert(!JHHClipboardFresh(NAN,10,20));
  assert(JHHClipboardContext(1,1,1,1,1,1));
  for(int i=0;i<6;i++){bool f[6]={1,1,1,1,1,1};f[i]=0;assert(!JHHClipboardContext(f[0],f[1],f[2],f[3],f[4],f[5]));}
+ JHHClipboardPinch p;
+ assert(!JHHClipboardPastePinch(100,800,400,&p));assert(!JHHClipboardPastePinch(375,812,50,&p));
+ assert(!JHHClipboardPastePinch(375,812,900,&p));assert(!JHHClipboardPastePinch(NAN,812,400,&p));
+ assert(JHHClipboardPastePinch(375,812,450,&p));
+ for(int i=0;i<3;i++){assert(p.sx[i]>0&&p.sx[i]<1&&p.ex[i]>0&&p.ex[i]<1);assert(p.sy[i]>0&&p.ey[i]>0&&p.sy[i]<450.0/812&&p.ey[i]<450.0/812);}
+ assert(p.ey[0]<p.sy[0]&&p.ex[1]>p.sx[1]&&p.ex[2]<p.sx[2]);
  return 0;}'''
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'test.c').write_text(code)
@@ -27,11 +33,12 @@ int main(void){
   self.assertIn('UIPasteboardOptionLocalOnly:@YES',s)
   self.assertIn('UIPasteboardOptionExpirationDate',s)
   self.assertNotIn('NSLog',s);self.assertNotIn('setValue:',s)
- def test_one_use_ticket_before_menu_actions(self):
+ def test_one_use_ticket_before_paste_gesture(self):
   s=(ROOT/'patches/JHHClipboard.m').read_text();s=s[s.index('+ (id<FBResponsePayload>)pasteClipboard:'):]
   self.assertLess(s.index('JHHPreparedClipboard=nil'),s.index('initForTouchAtPoint:'))
-  self.assertIn('JHHClipboardContext(',s);self.assertIn('matches!=1',s)
-  self.assertIn('app.menuItems',s);self.assertIn('app.menus',s)
-  self.assertNotIn('app.buttons',s);self.assertNotIn('acceptWithError',s)
-  self.assertIn('paste_invoked_unverified',s)
+  self.assertIn('JHHClipboardContext(',s);self.assertIn('finger<3',s)
+  self.assertIn('JHHClipboardPastePinch(',s)
+  self.assertNotIn('app.buttons',s);self.assertNotIn('[paste tap]',s);self.assertNotIn('acceptWithError',s)
+  self.assertNotIn('liftUpAtOffset:.65',s)
+  self.assertIn('paste_gesture_invoked_unverified',s)
 if __name__=='__main__':unittest.main()
