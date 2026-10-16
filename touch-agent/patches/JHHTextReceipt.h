@@ -10,4 +10,11 @@ static inline JHHTextOutcome JHHTextClassify(bool succeeded,bool error,bool same
  if (!editing && !keyboardAfter && !focusAfter) return JHHTextContextLost;
  return JHHTextDispatched;
 }
+#ifdef __OBJC__
+#import <Foundation/Foundation.h>
+// A C comparison has type int. Boxing it directly emits JSON 1/0 rather than true/false.
+static inline NSNumber *JHHTextAcceptedValue(JHHTextOutcome outcome) {
+ return outcome == JHHTextDispatched ? @YES : @NO;
+}
+#endif
 #endif

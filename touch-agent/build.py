@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 SOURCE_URL = 'https://codeload.github.com/appium/WebDriverAgent/zip/refs/tags/v12.0.0'
 SOURCE_SHA256 = '9c435b122b93d0f88cbf06b65eec5756d30c12d90a73b2d1c8caeef00edf540e'
-VERSION = '1.9.0'
+VERSION = '1.9.1'
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -149,9 +149,9 @@ def package(app, source, artifacts):
     test_info = plistlib.loads(test_info_file.read_bytes())
     main_id, test_id = bundle_identifiers('com.jinghaohao.touch.runner')
     info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='镜好好触控', CFBundleName='JHHTouchAgent',
-                CFBundleShortVersionString=VERSION, CFBundleVersion='10', MinimumOSVersion='16.0',
+                CFBundleShortVersionString=VERSION, CFBundleVersion='11', MinimumOSVersion='16.0',
                 JHHComponent='JHH-Touch-Agent', JHHProtocolVersion=1)
-    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='10')
+    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='11')
     for data in (info, test_info):
         data.pop('NSPhotoLibraryUsageDescription', None)
         data['NSPhotoLibraryAddUsageDescription'] = '将你在镜好好电脑端选择的图片保存到相册；不读取已有照片。'
@@ -180,6 +180,9 @@ def package(app, source, artifacts):
         for f in files:
             if hashlib.sha256(z.read(f['path'])).hexdigest() != f['sha256']:
                 raise RuntimeError('IPA entry checksum mismatch')
+    codec=ROOT/'json-codec-proof.json'
+    if not codec.exists():raise RuntimeError('Actual Foundation JSON test proof required')
+    shutil.copy2(codec,artifacts/codec.name)
     shutil.copy2(ROOT / 'LICENSE', artifacts / 'LICENSE')
     shutil.copy2(ROOT / 'README.md', artifacts / 'README.md')
     shutil.copy2(source / 'LICENSE', artifacts / 'WebDriverAgent-LICENSE')

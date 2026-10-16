@@ -38,4 +38,33 @@ int main(void) {
   for forbidden in ('.value','.label','.identifier','setValue:','UIPasteboard','NSLog'):self.assertNotIn(forbidden,helper)
   self.assertIn('seen++<4096',helper)
   self.assertEqual(helper.count('typeText:text atOffset'),1)
+ def test_actual_foundation_json_boolean_wire_format(self):
+  if sys.platform!='darwin':self.skipTest('Foundation JSON serialization requires macOS; mandatory in cloud')
+  cc=shutil.which('clang');self.assertIsNotNone(cc)
+  code=r'''
+#import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
+#include <assert.h>
+#include "JHHTextReceipt.h"
+int main(int argc,const char **argv) { @autoreleasepool {
+ JHHTextOutcome outcome=JHHTextDispatched;
+ NSNumber *old=@(outcome==JHHTextDispatched);
+ NSDictionary *values=@{@"originalAccepted":old,@"fixedAccepted":JHHTextAcceptedValue(outcome),
+                       @"negative":JHHTextAcceptedValue(JHHTextEventFailed)};
+ NSData *wire=[NSJSONSerialization dataWithJSONObject:values options:0 error:nil];
+ NSDictionary *decoded=[NSJSONSerialization JSONObjectWithData:wire options:0 error:nil];
+ assert(CFGetTypeID((__bridge CFTypeRef)decoded[@"originalAccepted"])!=CFBooleanGetTypeID());
+ assert(CFGetTypeID((__bridge CFTypeRef)decoded[@"fixedAccepted"])==CFBooleanGetTypeID());
+ assert(CFGetTypeID((__bridge CFTypeRef)decoded[@"negative"])==CFBooleanGetTypeID());
+ assert([decoded[@"fixedAccepted"] boolValue]&&![decoded[@"negative"] boolValue]);
+ assert([wire writeToFile:[NSString stringWithUTF8String:argv[1]] atomically:YES]);
+ } return 0; }
+'''
+  with tempfile.TemporaryDirectory() as t:
+   p=Path(t);(p/'test.m').write_text(code)
+   subprocess.run([cc,'-fobjc-arc','-framework','Foundation','-framework','CoreFoundation','-I',str(ROOT/'patches'),str(p/'test.m'),'-o',str(p/'test')],check=True)
+   subprocess.run([str(p/'test'),str(ROOT/'json-codec-proof.json')],check=True)
+  source=(ROOT/'patches/JHHControlCommands.m').read_text()
+  self.assertIn('@"accepted":JHHTextAcceptedValue(outcome)',source)
+  self.assertNotIn('@"accepted":@(outcome==',source)
 if __name__=='__main__':unittest.main()

@@ -19,3 +19,6 @@ Adds USB-only PhotoKit add-only image upload on the existing lightweight runner;
 
 ## v1.9.0 execution receipts
 Reads the actual XCTest completion BOOL and safe pre/post keyboard/focus flags, including app-change detection. A hidden keyboard with observed editing focus remains usable. Unknown outcomes retain text on desktop; no automatic repeat, fallback, field mutation or message sending. No field values/labels or submitted text are logged. Insertion remains unverified even when event execution succeeds. Requires real iPhone/Xianyu validation after signing.
+
+## v1.9.1 JSON boolean encoding fix
+The v1.9.0 comparison was boxed as an Objective-C integer, emitting 1/0 instead of true/false. Production now uses explicit NSNumber booleans. A macOS Foundation serialization test reproduces the old encoding and validates the real new helper; json-codec-proof.json ships with the build. Desktop supports the narrowly identified old committed-text receipt while retaining all event, app and context guards. UTF-8 is explicit for the desktop worker. Real app text insertion is still not verified by receipt alone.

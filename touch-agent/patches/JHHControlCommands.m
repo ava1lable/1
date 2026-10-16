@@ -64,7 +64,7 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.9.0", @"protocol":@1,
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.9.1", @"protocol":@1,
     @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"photo-upload-v1"]});
 }
 
@@ -275,7 +275,7 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   JHHTextOutcome outcome=JHHTextClassify(eventSucceeded,hadError,sameApp,keyboardAfter,focusAfter,isEditing);
   NSString *code=outcome==JHHTextEventFailed?@"text_event_failed":outcome==JHHTextAppChanged?@"text_app_changed":
     outcome==JHHTextContextLost?@"text_context_lost":@"event_dispatched_unverified";
-  return FBResponseWithObject(@{@"accepted":@(outcome==JHHTextDispatched),@"code":code,@"sequence":@(sequence),@"engine":@"committed-text-v1",
+  return FBResponseWithObject(@{@"accepted":JHHTextAcceptedValue(outcome),@"code":code,@"sequence":@(sequence),@"engine":@"committed-text-v1",
     @"receiptVersion":@1,@"executionAttempted":@YES,@"eventSucceeded":@(eventSucceeded),@"hadError":@(hadError),
     @"sameApp":@(sameApp),@"appToken":appToken,@"keyboardBefore":@(keyboardBefore),@"focusBefore":@(focusBefore),
     @"keyboardAfter":@(keyboardAfter),@"focusAfter":@(focusAfter),@"insertionVerified":@NO,
