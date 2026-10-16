@@ -57,7 +57,7 @@ int main(void) {
  // Fresh keyboard-frame validation cannot extend the bounded five-minute calibration limit.
  assert(JHHGeometryCacheLearn(&c,k,frame,0));
  for(int i=1;i<600;i++)assert(JHHGeometryCacheValidate(&c,k,frame,i*.1));
- assert(JHHGeometryCacheInspect(&c,k,60)==JHHCacheCheckFrame);
+ assert(JHHGeometryCacheInspect(&c,k,60)==JHHCacheHit);
  assert(JHHGeometryCacheInspect(&c,k,300)==JHHCachePeriodic);
  return 0;
 }'''

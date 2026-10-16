@@ -44,7 +44,7 @@ int main(void){@autoreleasepool{
  assert([m[@"callbackMs"] doubleValue]>0&&[m[@"completionWaitMs"] doubleValue]<100);
  ok=JHHWaitForEvent(^(void(^done)(BOOL,NSError*)){done(NO,nil);},.1,&m,&e);assert(!ok);
  ok=JHHWaitForEvent(^(void(^done)(BOOL,NSError*)){done(YES,[NSError errorWithDomain:@"test" code:1 userInfo:nil]);},.1,&m,&e);assert(!ok&&e);
- ok=JHHWaitForEvent(^(void(^done)(BOOL,NSError*)){@throw [NSException exceptionWithName:@"test" reason:nil userInfo:nil];},.1,&m,&e);assert(!ok&&e);
+ ok=JHHWaitForEvent(^(void(^done)(BOOL,NSError*)){(void)done;@throw [NSException exceptionWithName:@"test" reason:nil userInfo:nil];},.1,&m,&e);assert(!ok&&e);
  __block void(^late)(BOOL,NSError*)=nil;
  ok=JHHWaitForEvent(^(void(^done)(BOOL,NSError*)){late=[done copy];},.025,&m,&e);
  assert(!ok&&e&&[m[@"completionTimedOut"] boolValue]);late(YES,nil);late=nil;
