@@ -20,6 +20,7 @@
 #include "JHHKeyboardCandidates.h"
 #include "JHHCommittedText.h"
 #include "JHHTextReceipt.h"
+#include "JHHClipboardPolicy.h"
 #import "XCUIDevice.h"
 #import "XCTRunnerDaemonSession.h"
 #import "FBRunLoopSpinner.h"

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Included in JHHControlCommands. USB-only, one-use preparation; never log text.
-#include "JHHClipboardPolicy.h"
 static NSMutableDictionary *JHHPreparedClipboard;
 static unsigned long long JHHClipboardSequence(NSDictionary *a) {
  if(![a[@"instance"] isKindOfClass:NSString.class]||![a[@"instance"] isEqual:JHHInstance])return 0;
