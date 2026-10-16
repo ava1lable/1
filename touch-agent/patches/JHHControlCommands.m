@@ -225,9 +225,12 @@ static NSString *JHHTextAppToken(XCUIApplication *app) {
  unsigned char digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,digest);
  return [NSString stringWithFormat:@"app#%02x%02x%02x%02x%02x",digest[0],digest[1],digest[2],digest[3],digest[4]];
 }
-static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,double timeout,BOOL *hadError,NSDictionary **metrics) {
+static BOOL JHHSynthesizeCommittedTextMeasured(XCSynthesizedEventRecord *event,double timeout,BOOL *hadError,NSDictionary **metrics) {
  NSError *error=nil;BOOL succeeded=JHHSynthesizeEvent(event,timeout,metrics,&error);
  if(hadError)*hadError=error!=nil;return succeeded;
+}
+static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *hadError) {
+ return JHHSynthesizeCommittedTextMeasured(event,8,hadError,NULL);
 }
 // Same redacted event mechanism, now with explicit execution and context receipts.
 + (id<FBResponsePayload>)committedText:(FBRouteRequest *)request
@@ -280,7 +283,7 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,double ti
   JHHLastSequence=sequence;JHHMayBeComposing=NO;
   BOOL hadError=NO;
   NSDictionary *completionMetrics=nil;
-  BOOL eventSucceeded=JHHSynthesizeCommittedText(event,8+(isText?text.length/60.0:0),&hadError,&completionMetrics);
+  BOOL eventSucceeded=JHHSynthesizeCommittedTextMeasured(event,8+(isText?text.length/60.0:0),&hadError,&completionMetrics);
   double synthesis=(CFAbsoluteTimeGetCurrent()-started)*1000-preflight;
   XCUIApplication *afterApp=XCUIApplication.fb_activeApplication;afterApp.fb_shouldWaitForQuiescence=NO;
   BOOL sameApp=beforePID>0&&afterApp.processID==beforePID;
