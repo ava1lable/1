@@ -136,7 +136,7 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
 }
 static void JHHClipboardMenuDiagnostics(BOOL available,BOOL found,BOOL enabled,BOOL gesture) {
  NSMutableDictionary *d=[(JHHClipboardWriteDiagnostics?:@{}) mutableCopy];
- [d addEntriesFromDictionary:@{@"pasteboardAvailableBeforePaste":available?@YES:@NO,@"pasteMenuFound":found?@YES:@NO,
+ [d addEntriesFromDictionary:@{@"backgroundClipboardTextObserved":available?@YES:@NO,@"pasteMenuFound":found?@YES:@NO,
   @"pasteMenuEnabled":enabled?@YES:@NO,@"menuGestureDispatched":gesture?@YES:@NO}];JHHClipboardWriteDiagnostics=d;
 }
 static XCUIElement *JHHClipboardFindPasteMenu(XCUIApplication *root,CGRect bounds,BOOL *ambiguous) {
@@ -180,7 +180,8 @@ static XCUIElement *JHHClipboardFindPasteMenu(XCUIApplication *root,CGRect bound
  BOOL clipboardSame=UIPasteboard.generalPasteboard.changeCount==[prepared[@"change"] integerValue];
  BOOL textAvailable=UIPasteboard.generalPasteboard.hasStrings&&[UIPasteboard.generalPasteboard containsPasteboardTypes:@[@"public.utf8-plain-text",@"public.plain-text",@"public.text"]];
  JHHClipboardMenuDiagnostics(textAvailable,NO,NO,NO);
- if(!textAvailable)return JHHClipboardReply(NO,@"clipboard_not_available",sequence,YES,NO);
+ // Background pasteboard metadata may be hidden by iOS. Never reject on it;
+ // the foreground app's actual enabled system Paste item is the action gate.
  if(!frameSame&&app.processID==[prepared[@"pid"] intValue]&&clipboardSame&&app.interfaceOrientation==[prepared[@"orientation"] integerValue])
   return JHHClipboardReply(NO,@"clipboard_refocus_required",sequence,YES,NO);
  if(!JHHClipboardContext(app.processID==[prepared[@"pid"] intValue],app.interfaceOrientation==[prepared[@"orientation"] integerValue],
@@ -203,7 +204,7 @@ static XCUIElement *JHHClipboardFindPasteMenu(XCUIApplication *root,CGRect bound
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
  BOOL hadError=NO;
  if(!JHHSynthesizeCommittedText(event,&hadError)||hadError)return JHHClipboardReply(NO,@"clipboard_gesture_failed",sequence,YES,NO);
- JHHClipboardMenuDiagnostics(YES,NO,NO,YES);
+ JHHClipboardMenuDiagnostics(textAvailable,NO,NO,YES);
  XCUIElement *paste=nil;BOOL ambiguous=NO;double until=NSProcessInfo.processInfo.systemUptime+2.0;
  do {
   if(XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue])return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
@@ -217,9 +218,9 @@ static XCUIElement *JHHClipboardFindPasteMenu(XCUIApplication *root,CGRect bound
  }while(NSProcessInfo.processInfo.systemUptime<until);
  if(ambiguous)return JHHClipboardReply(NO,@"clipboard_menu_ambiguous",sequence,YES,NO);
  if(!paste)return JHHClipboardReply(NO,@"clipboard_menu_unavailable",sequence,YES,NO);
- BOOL enabled=paste.enabled&&paste.hittable;JHHClipboardMenuDiagnostics(YES,YES,enabled,YES);
+ BOOL enabled=paste.enabled&&paste.hittable;JHHClipboardMenuDiagnostics(textAvailable,YES,enabled,YES);
  if(!enabled)return JHHClipboardReply(NO,@"clipboard_paste_disabled",sequence,YES,NO);
- if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||!UIPasteboard.generalPasteboard.hasStrings||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||app.interfaceOrientation!=[prepared[@"orientation"] integerValue]||!JHHClipboardFresh(NSProcessInfo.processInfo.systemUptime,[prepared[@"created"] doubleValue],20))
+ if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||app.interfaceOrientation!=[prepared[@"orientation"] integerValue]||!JHHClipboardFresh(NSProcessInfo.processInfo.systemUptime,[prepared[@"created"] doubleValue],20))
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
  @try {[paste tap];if(app.alerts.firstMatch.exists||XCUIApplication.fb_systemApplication.alerts.firstMatch.exists)return JHHClipboardReply(NO,@"clipboard_system_alert",sequence,YES,YES);} @catch(NSException *exception){return JHHClipboardReply(NO,@"clipboard_paste_unconfirmed",sequence,YES,YES);}
  JHHMayBeComposing=NO;
