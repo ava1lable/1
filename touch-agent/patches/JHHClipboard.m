@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Included in JHHControlCommands. USB-only, one-use preparation; never log text.
 static NSMutableDictionary *JHHPreparedClipboard;
+static NSDictionary *JHHClipboardWriteDiagnostics;
 static unsigned long long JHHClipboardSequence(NSDictionary *a) {
  if(![a[@"instance"] isKindOfClass:NSString.class]||![a[@"instance"] isEqual:JHHInstance])return 0;
  if(![JHHControlCommands number:a[@"sequence"] min:1 max:9007199254740991.0]||floor([a[@"sequence"] doubleValue])!=[a[@"sequence"] doubleValue])return 0;
@@ -11,18 +12,21 @@ static CGRect JHHClipboardKeyboardFrame(XCUIApplication *app) {
   return k.children.count?k.frame:CGRectZero; } @catch(NSException *e){return CGRectZero;}
 }
 static id<FBResponsePayload> JHHClipboardReply(BOOL accepted,NSString *code,unsigned long long sequence,BOOL written,BOOL invoked) {
- return FBResponseWithObject(@{@"accepted":accepted?@YES:@NO,@"code":code,@"sequence":@(sequence),
-  @"engine":@"clipboard-paste-v1",@"clipboardWritten":written?@YES:@NO,@"pasteInvoked":invoked?@YES:@NO,@"insertionVerified":@NO});
+ NSMutableDictionary *reply=[@{@"accepted":accepted?@YES:@NO,@"code":code,@"sequence":@(sequence),
+  @"engine":@"clipboard-paste-v1",@"clipboardWritten":written?@YES:@NO,@"pasteInvoked":invoked?@YES:@NO,@"insertionVerified":@NO} mutableCopy];
+ [reply addEntriesFromDictionary:JHHClipboardWriteDiagnostics?:@{}];return FBResponseWithObject(reply);
 }
-static JHHForegroundResult JHHClipboardWaitForApp(NSString *expected,pid_t pid,NSString *previous) {
+static JHHForegroundResult JHHClipboardWaitForApp(NSString *expected,pid_t pid,NSString *previous,BOOL requireUIKitActive) {
  JHHForegroundWait wait={NSProcessInfo.processInfo.systemUptime,0};
  while(YES){
   @autoreleasepool {
    XCUIApplication *active=XCUIApplication.fb_activeApplication;
    NSString *bundle=active.bundleID;pid_t activePID=active.processID;
-   BOOL matches=[bundle isEqual:expected]&&activePID>0&&(pid<=0||activePID==pid);
+   BOOL axMatches=[bundle isEqual:expected]&&activePID>0&&(pid<=0||activePID==pid);
+   BOOL localActive=!requireUIKitActive||UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+   BOOL matches=axMatches&&localActive;
    // A relaunched target with another PID is not the original editor.
-   BOOL transition=!bundle.length||activePID<=0||(![bundle isEqual:expected]&&([bundle isEqual:previous]||[bundle isEqual:@"com.apple.springboard"]));
+   BOOL transition=(axMatches&&!localActive)||!bundle.length||activePID<=0||(![bundle isEqual:expected]&&([bundle isEqual:previous]||[bundle isEqual:@"com.apple.springboard"]));
    JHHForegroundResult result=JHHClipboardForegroundStep(&wait,NSProcessInfo.processInfo.systemUptime,matches,transition);
    if(result!=JHHForegroundPending)return result;
   }
@@ -30,14 +34,16 @@ static JHHForegroundResult JHHClipboardWaitForApp(NSString *expected,pid_t pid,N
  }
 }
 static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned long long sequence,BOOL written,BOOL runnerReady,BOOL attempted,BOOL restored,double restoreMs) {
- return FBResponseWithObject(@{@"accepted":@NO,@"code":code,@"sequence":@(sequence),@"engine":@"clipboard-paste-v1",
+ NSMutableDictionary *reply=[@{@"accepted":@NO,@"code":code,@"sequence":@(sequence),@"engine":@"clipboard-paste-v1",
   @"clipboardWritten":written?@YES:@NO,@"pasteInvoked":@NO,@"insertionVerified":@NO,
   @"runnerReady":runnerReady?@YES:@NO,@"restoreAttempted":attempted?@YES:@NO,@"targetRestored":restored?@YES:@NO,
-  @"restoreWaitMs":@((NSInteger)fmax(0,restoreMs))});
+  @"restoreWaitMs":@((NSInteger)fmax(0,restoreMs))} mutableCopy];
+ [reply addEntriesFromDictionary:JHHClipboardWriteDiagnostics?:@{}];return FBResponseWithObject(reply);
 }
 + (id<FBResponsePayload>)prepareClipboard:(FBRouteRequest *)request {
  NSDictionary *a=request.arguments;unsigned long long sequence=JHHClipboardSequence(a);
  if(!sequence)return [self rejected:@"clipboard_stale_request"];
+ JHHClipboardWriteDiagnostics=nil;
  NSString *text=a[@"text"];
  if(![text isKindOfClass:NSString.class]||text.length>4096)return [self rejected:@"invalid_text"];
  uint16_t units[4096];[text getCharacters:units range:NSMakeRange(0,text.length)];
@@ -54,20 +60,43 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
  NSString *bundle=target.bundleID,*own=NSBundle.mainBundle.bundleIdentifier;
  if(!bundle.length||!own.length||[bundle isEqual:own]||[bundle isEqual:@"com.apple.springboard"])
   return JHHClipboardReply(NO,@"clipboard_target_required",sequence,NO,NO);
- JHHLastSequence=sequence;JHHPreparedClipboard=nil;BOOL written=NO,restored=NO,runnerReady=NO,restoreAttempted=NO;
+ JHHLastSequence=sequence;JHHPreparedClipboard=nil;JHHClipboardWriteDiagnostics=nil;BOOL written=NO,restored=NO,runnerReady=NO,restoreAttempted=NO;
  NSString *failure=@"clipboard_foreground_failed";double restoreMs=0;
  NSInteger change=0;
  @try {
   XCUIApplication *runner=[[XCUIApplication alloc] initWithBundleIdentifier:own];runner.fb_shouldWaitForQuiescence=NO;
   [runner activate];
-  runnerReady=JHHClipboardWaitForApp(own,0,bundle)==JHHForegroundReady;
+  pid_t writerPID=NSProcessInfo.processInfo.processIdentifier;
+  runnerReady=JHHClipboardWaitForApp(own,writerPID,bundle,YES)==JHHForegroundReady;
+  BOOL processMatches=XCUIApplication.fb_activeApplication.processID==writerPID;
+  BOOL uiActive=UIApplication.sharedApplication.applicationState==UIApplicationStateActive;
+  JHHClipboardWriteDiagnostics=@{@"writerProcessMatches":processMatches?@YES:@NO,@"writerUIKitActive":uiActive?@YES:@NO};
   if(runnerReady){
    failure=@"clipboard_write_failed";
    UIPasteboard *pb=UIPasteboard.generalPasteboard;
-   [pb setItems:@[@{@"public.utf8-plain-text":text}] options:@{UIPasteboardOptionLocalOnly:@YES,
-     UIPasteboardOptionExpirationDate:[NSDate dateWithTimeIntervalSinceNow:90]}];
-   // Read back only our own newly written value while the runner is foreground.
-   written=[pb.string isEqual:text];change=pb.changeCount;
+   NSInteger before=pb.changeCount;
+   // NSString supplies standard text representations through NSItemProviderWriting.
+   // Keep Handoff disabled; allow ten minutes for deliberate manual verification.
+   [pb setObjects:@[text] localOnly:YES expirationDate:[NSDate dateWithTimeIntervalSinceNow:600]];
+   NSInteger publishedChange=pb.changeCount;
+   change=publishedChange;
+   double until=NSProcessInfo.processInfo.systemUptime+1.5;unsigned stable=0;
+   BOOL hasStrings=NO,standardText=NO;
+   do {
+    if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||XCUIApplication.fb_activeApplication.processID!=writerPID)break;
+    UIPasteboard *current=UIPasteboard.generalPasteboard;
+    if(publishedChange==before||current.changeCount!=publishedChange)break;
+    hasStrings=current.hasStrings;
+    standardText=[current containsPasteboardTypes:@[@"public.utf8-plain-text",@"public.plain-text",@"public.text"]];
+    // Only our newly written text is read, never the previous clipboard.
+    BOOL same=hasStrings&&standardText&&[current.string isEqual:text];
+    stable=same?stable+1:0;change=current.changeCount;
+    if(stable>=2){written=YES;break;}
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+   }while(NSProcessInfo.processInfo.systemUptime<until);
+   NSMutableDictionary *diagnostics=[JHHClipboardWriteDiagnostics mutableCopy];
+   [diagnostics addEntriesFromDictionary:@{@"clipboardHasStrings":hasStrings?@YES:@NO,@"clipboardStandardText":standardText?@YES:@NO,@"clipboardChangeAdvanced":change!=before?@YES:@NO}];
+   JHHClipboardWriteDiagnostics=diagnostics;
   }
  } @catch(NSException *exception) { written=NO; }
  @finally {
@@ -76,7 +105,7 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
   @try {
    XCUIApplication *active=XCUIApplication.fb_activeApplication;
    if([active.bundleID isEqual:bundle]&&active.processID==pid){
-    JHHForegroundResult result=JHHClipboardWaitForApp(bundle,pid,own);restored=result==JHHForegroundReady;
+    JHHForegroundResult result=JHHClipboardWaitForApp(bundle,pid,own,NO);restored=result==JHHForegroundReady;
     if(!restored)failure=result==JHHForegroundInterrupted?@"clipboard_restore_interrupted":@"clipboard_restore_timeout";
    }else if([active.bundleID isEqual:own]){
     // A fresh bundle-bound application can be activated reliably; the original
@@ -86,7 +115,7 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
     if(restore.running&&restore.processID==pid){
      restoreAttempted=YES;double begin=NSProcessInfo.processInfo.systemUptime;
      [restore activate];
-     JHHForegroundResult result=JHHClipboardWaitForApp(bundle,pid,own);
+     JHHForegroundResult result=JHHClipboardWaitForApp(bundle,pid,own,NO);
      restoreMs=(NSProcessInfo.processInfo.systemUptime-begin)*1000;
      restored=result==JHHForegroundReady;
      if(!restored)failure=result==JHHForegroundInterrupted?@"clipboard_restore_interrupted":@"clipboard_restore_timeout";
@@ -99,15 +128,42 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
  NSString *ticket=NSUUID.UUID.UUIDString;
  JHHPreparedClipboard=[@{@"ticket":ticket,@"pid":@(pid),@"orientation":@(orientation),@"change":@(change),
   @"keyboard":[NSValue valueWithCGRect:keyboard],@"point":[NSValue valueWithCGPoint:JHHLastTapPoint],
-  @"created":@(NSProcessInfo.processInfo.systemUptime)} mutableCopy];
- return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"engine":@"clipboard-paste-v1",
+  @"created":@(NSProcessInfo.processInfo.systemUptime),@"diagnostics":JHHClipboardWriteDiagnostics?:@{}} mutableCopy];
+ NSMutableDictionary *reply=[@{@"accepted":@YES,@"sequence":@(sequence),@"engine":@"clipboard-paste-v1",
   @"clipboardWritten":@YES,@"targetRestored":@YES,@"ticket":ticket,@"insertionVerified":@NO,
-  @"runnerReady":@YES,@"restoreAttempted":restoreAttempted?@YES:@NO,@"restoreWaitMs":@((NSInteger)fmax(0,restoreMs))});
+  @"runnerReady":@YES,@"restoreAttempted":restoreAttempted?@YES:@NO,@"restoreWaitMs":@((NSInteger)fmax(0,restoreMs))} mutableCopy];
+ [reply addEntriesFromDictionary:JHHClipboardWriteDiagnostics?:@{}];return FBResponseWithObject(reply);
+}
+static void JHHClipboardMenuDiagnostics(BOOL available,BOOL found,BOOL enabled,BOOL gesture) {
+ NSMutableDictionary *d=[(JHHClipboardWriteDiagnostics?:@{}) mutableCopy];
+ [d addEntriesFromDictionary:@{@"pasteboardAvailableBeforePaste":available?@YES:@NO,@"pasteMenuFound":found?@YES:@NO,
+  @"pasteMenuEnabled":enabled?@YES:@NO,@"menuGestureDispatched":gesture?@YES:@NO}];JHHClipboardWriteDiagnostics=d;
+}
+static XCUIElement *JHHClipboardFindPasteMenu(XCUIApplication *root,CGRect bounds,BOOL *ambiguous) {
+ NSPredicate *label=[NSPredicate predicateWithFormat:@"label IN %@",@[@"Paste",@"粘贴",@"黏贴"]];
+ // Search only menu items or menu/toolbar buttons, never chat or Send buttons.
+ NSArray<XCUIElementQuery *> *queries=@[[root.menuItems matchingPredicate:label],
+  [root.menus.buttons matchingPredicate:label],[root.toolbars.buttons matchingPredicate:label]];
+ for(XCUIElementQuery *query in queries){
+  NSArray<XCUIElement *> *all=query.allElementsBoundByIndex;
+  if(all.count>8){*ambiguous=YES;return nil;}
+  NSMutableArray<XCUIElement *> *visible=[NSMutableArray array];
+  for(XCUIElement *item in all){
+   CGRect frame=item.frame;
+   if(!item.exists||CGRectIsEmpty(frame)||!CGRectIntersectsRect(frame,bounds))continue;
+   if(item.enabled&&!item.hittable)continue;
+   [visible addObject:item];
+  }
+  if(visible.count>1){*ambiguous=YES;return nil;}
+  if(visible.count==1)return visible.firstObject;
+ }
+ return nil;
 }
 + (id<FBResponsePayload>)pasteClipboard:(FBRouteRequest *)request {
  NSDictionary *a=request.arguments;unsigned long long sequence=JHHClipboardSequence(a);
  if(!sequence)return [self rejected:@"clipboard_stale_request"];
  NSDictionary *prepared=JHHPreparedClipboard;JHHPreparedClipboard=nil;JHHLastSequence=sequence;
+ JHHClipboardWriteDiagnostics=prepared[@"diagnostics"];
  if(!prepared||![a[@"ticket"] isKindOfClass:NSString.class]||![a[@"ticket"] isEqual:prepared[@"ticket"]])
   return JHHClipboardReply(NO,@"clipboard_ticket_invalid",sequence,NO,NO);
  XCUIApplication *app=XCUIApplication.fb_activeApplication;app.fb_shouldWaitForQuiescence=NO;
@@ -122,6 +178,9 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
   [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
  }while(NSProcessInfo.processInfo.systemUptime<keyboardUntil);
  BOOL clipboardSame=UIPasteboard.generalPasteboard.changeCount==[prepared[@"change"] integerValue];
+ BOOL textAvailable=UIPasteboard.generalPasteboard.hasStrings&&[UIPasteboard.generalPasteboard containsPasteboardTypes:@[@"public.utf8-plain-text",@"public.plain-text",@"public.text"]];
+ JHHClipboardMenuDiagnostics(textAvailable,NO,NO,NO);
+ if(!textAvailable)return JHHClipboardReply(NO,@"clipboard_not_available",sequence,YES,NO);
  if(!frameSame&&app.processID==[prepared[@"pid"] intValue]&&clipboardSame&&app.interfaceOrientation==[prepared[@"orientation"] integerValue])
   return JHHClipboardReply(NO,@"clipboard_refocus_required",sequence,YES,NO);
  if(!JHHClipboardContext(app.processID==[prepared[@"pid"] intValue],app.interfaceOrientation==[prepared[@"orientation"] integerValue],
@@ -129,32 +188,40 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
  CGPoint point=[prepared[@"point"] CGPointValue];
  if(CGRectContainsPoint(CGRectInset(keyboard,-4,-4),point))return JHHClipboardReply(NO,@"clipboard_target_required",sequence,YES,NO);
- // Use iPhone's system three-finger pinch-out Paste gesture. Do not long
- // press a stale text point: doing so can relocate the caret or select/replace
- // existing words on each subsequent commit. Never auto-fallback after a gesture.
- CGRect appFrame=app.frame;JHHClipboardPinch pinch;
- if(!JHHClipboardPastePinch(appFrame.size.width,appFrame.size.height,CGRectGetMinY(keyboard)-CGRectGetMinY(appFrame)-12,&pinch))
+ // Display the system editing toolbar at the user's actual editor click, then
+ // require one visible enabled Paste item. No long press or fallback gesture.
+ CGRect appFrame=app.frame;JHHClipboardMenuTap points;
+ if(!JHHClipboardMenuTapPoints(appFrame.origin.x,appFrame.origin.y,appFrame.size.width,appFrame.size.height,
+      CGRectGetMinY(keyboard),point.x,point.y,&points))
   return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
- CGPoint p0=[app coordinateWithNormalizedOffset:CGVectorMake(0,0)].screenPoint;
- CGPoint px=[app coordinateWithNormalizedOffset:CGVectorMake(.5,0)].screenPoint;
- CGPoint py=[app coordinateWithNormalizedOffset:CGVectorMake(0,.5)].screenPoint;JHHTransform transform;
- if(!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&transform))
-  return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
- XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH System Paste" interfaceOrientation:app.interfaceOrientation];
+ XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH System Editing Toolbar" interfaceOrientation:app.interfaceOrientation];
  for(int finger=0;finger<3;finger++){
-  JHHPoint from,to;
-  if(!JHHTransformMap(transform,pinch.sx[finger],pinch.sy[finger],&from)||!JHHTransformMap(transform,pinch.ex[finger],pinch.ey[finger],&to))
-   return JHHClipboardReply(NO,@"clipboard_geometry_unavailable",sequence,YES,NO);
-  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(from.x,from.y) offset:0];
-  for(int step=1;step<=6;step++){
-   double f=step/6.0;[path moveToPoint:CGPointMake(from.x+(to.x-from.x)*f,from.y+(to.y-from.y)*f) atOffset:.04+.28*f];
-  }
-  [path liftUpAtOffset:.36];[event addPointerEventPath:path];
+  XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(points.x[finger],points.y[finger]) offset:0];
+  [path liftUpAtOffset:.15];[event addPointerEventPath:path];
  }
  if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||app.interfaceOrientation!=[prepared[@"orientation"] integerValue])
   return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
  BOOL hadError=NO;
  if(!JHHSynthesizeCommittedText(event,&hadError)||hadError)return JHHClipboardReply(NO,@"clipboard_gesture_failed",sequence,YES,NO);
+ JHHClipboardMenuDiagnostics(YES,NO,NO,YES);
+ XCUIElement *paste=nil;BOOL ambiguous=NO;double until=NSProcessInfo.processInfo.systemUptime+2.0;
+ do {
+  if(XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue])return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
+  if(app.alerts.firstMatch.exists||XCUIApplication.fb_systemApplication.alerts.firstMatch.exists)return JHHClipboardReply(NO,@"clipboard_system_alert",sequence,YES,NO);
+  @try {
+   paste=JHHClipboardFindPasteMenu(app,appFrame,&ambiguous);
+   if(!paste&&!ambiguous)paste=JHHClipboardFindPasteMenu(XCUIApplication.fb_systemApplication,appFrame,&ambiguous);
+  } @catch(NSException *exception){return JHHClipboardReply(NO,@"clipboard_menu_unavailable",sequence,YES,NO);}
+  if(paste||ambiguous)break;
+  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.12]];
+ }while(NSProcessInfo.processInfo.systemUptime<until);
+ if(ambiguous)return JHHClipboardReply(NO,@"clipboard_menu_ambiguous",sequence,YES,NO);
+ if(!paste)return JHHClipboardReply(NO,@"clipboard_menu_unavailable",sequence,YES,NO);
+ BOOL enabled=paste.enabled&&paste.hittable;JHHClipboardMenuDiagnostics(YES,YES,enabled,YES);
+ if(!enabled)return JHHClipboardReply(NO,@"clipboard_paste_disabled",sequence,YES,NO);
+ if(UIPasteboard.generalPasteboard.changeCount!=[prepared[@"change"] integerValue]||!UIPasteboard.generalPasteboard.hasStrings||XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue]||app.interfaceOrientation!=[prepared[@"orientation"] integerValue]||!JHHClipboardFresh(NSProcessInfo.processInfo.systemUptime,[prepared[@"created"] doubleValue],20))
+  return JHHClipboardReply(NO,@"clipboard_context_changed",sequence,YES,NO);
+ @try {[paste tap];if(app.alerts.firstMatch.exists||XCUIApplication.fb_systemApplication.alerts.firstMatch.exists)return JHHClipboardReply(NO,@"clipboard_system_alert",sequence,YES,YES);} @catch(NSException *exception){return JHHClipboardReply(NO,@"clipboard_paste_unconfirmed",sequence,YES,YES);}
  JHHMayBeComposing=NO;
- return JHHClipboardReply(YES,@"paste_gesture_invoked_unverified",sequence,YES,YES);
+ return JHHClipboardReply(YES,@"paste_menu_invoked_unverified",sequence,YES,YES);
 }

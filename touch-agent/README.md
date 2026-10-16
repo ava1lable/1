@@ -22,3 +22,6 @@ Reads the actual XCTest completion BOOL and safe pre/post keyboard/focus flags, 
 
 ## v1.9.1 JSON boolean encoding fix
 The v1.9.0 comparison was boxed as an Objective-C integer, emitting 1/0 instead of true/false. Production now uses explicit NSNumber booleans. A macOS Foundation serialization test reproduces the old encoding and validates the real new helper; json-codec-proof.json ships with the build. Desktop supports the narrowly identified old committed-text receipt while retaining all event, app and context guards. UTF-8 is explicit for the desktop worker. Real app text insertion is still not verified by receipt alone.
+
+
+Clipboard 1.10.2: requires the actual XCTest host PID and active UIKit state; writes an NSString using the standard local-only object API with a ten-minute expiry. Clipboard availability is checked before one stationary three-finger editor tap; only a unique enabled Paste menu/toolbar item may be invoked. No long press, pinch fallback, permission acceptance, Send action, or automatic replay. Receipts never claim verified insertion. Physical-device compatibility remains unverified for this revision.

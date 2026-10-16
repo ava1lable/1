@@ -19,14 +19,12 @@ static inline JHHForegroundResult JHHClipboardForegroundStep(JHHForegroundWait *
  return wait->stable>=2?JHHForegroundReady:JHHForegroundPending;
 }
 
-typedef struct { double sx[3],sy[3],ex[3],ey[3]; } JHHClipboardPinch;
-static inline bool JHHClipboardPastePinch(double width,double height,double usableHeight,JHHClipboardPinch *out) {
- if(!out||!isfinite(width)||!isfinite(height)||!isfinite(usableHeight)||width<180||height<180||usableHeight<160||usableHeight>height)return false;
- double r0=fmin(width,usableHeight)*.06,r1=fmin(width,usableHeight)*.22;
- const double dx[3]={0,.8660254037844386,-.8660254037844386},dy[3]={-1,.5,.5};
- for(int i=0;i<3;i++){
-  out->sx[i]=(.5*width+dx[i]*r0)/width;out->sy[i]=(.5*usableHeight+dy[i]*r0)/height;
-  out->ex[i]=(.5*width+dx[i]*r1)/width;out->ey[i]=(.5*usableHeight+dy[i]*r1)/height;
- }
+typedef struct { double x[3],y[3]; } JHHClipboardMenuTap;
+// Three stationary touches at the user's last editor click. Never pinch in the
+// chat list, long-press, relocate the caret, or touch inside the keyboard.
+static inline bool JHHClipboardMenuTapPoints(double left,double top,double width,double height,double keyboardTop,double x,double y,JHHClipboardMenuTap *out) {
+ if(!out||!isfinite(left)||!isfinite(top)||!isfinite(width)||!isfinite(height)||!isfinite(keyboardTop)||!isfinite(x)||!isfinite(y)||
+    width<120||height<120||keyboardTop<top+40||keyboardTop>top+height||x<left+24||x>left+width-24||y<top+8||y>keyboardTop-6)return false;
+ for(int i=0;i<3;i++){out->x[i]=x+(i-1)*22;out->y[i]=y;}
  return true;
 }
