@@ -71,8 +71,8 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.10.0", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"clipboard-paste-v1", @"photo-upload-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.10.1", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"clipboard-paste-v1", @"clipboard-foreground-settle-v1", @"photo-upload-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code

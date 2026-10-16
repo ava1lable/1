@@ -29,7 +29,7 @@ int main(void){
   s=(ROOT/'patches/JHHClipboard.m').read_text()
   self.assertLess(s.index('[runner activate]'),s.index('[pb setItems:'))
   self.assertLess(s.index('[pb setItems:'),s.index('pb.string'))
-  self.assertIn('@finally',s);self.assertIn('[target activate]',s)
+  self.assertIn('@finally',s);self.assertIn('[restore activate]',s)
   self.assertIn('UIPasteboardOptionLocalOnly:@YES',s)
   self.assertIn('UIPasteboardOptionExpirationDate',s)
   self.assertNotIn('NSLog',s);self.assertNotIn('setValue:',s)
@@ -41,4 +41,31 @@ int main(void){
   self.assertNotIn('app.buttons',s);self.assertNotIn('[paste tap]',s);self.assertNotIn('acceptWithError',s)
   self.assertNotIn('liftUpAtOffset:.65',s)
   self.assertIn('paste_gesture_invoked_unverified',s)
+ def test_delayed_foreground_and_user_interruption_policy(self):
+  cc=shutil.which('clang') or shutil.which('cc')
+  if not cc:
+   if sys.platform=='darwin':self.fail('Cloud compiler required')
+   self.skipTest('Cloud compiler required')
+  code='''#include "JHHClipboardPolicy.h"
+#include <assert.h>
+int main(void){
+ JHHForegroundWait w={10,0};
+ assert(JHHClipboardForegroundStep(&w,10,0,1)==JHHForegroundPending);
+ assert(JHHClipboardForegroundStep(&w,10.8,1,0)==JHHForegroundPending);
+ assert(JHHClipboardForegroundStep(&w,10.88,1,0)==JHHForegroundReady);
+ w=(JHHForegroundWait){20,0};
+ assert(JHHClipboardForegroundStep(&w,20.1,1,0)==JHHForegroundPending);
+ assert(JHHClipboardForegroundStep(&w,20.2,0,1)==JHHForegroundPending);
+ assert(JHHClipboardForegroundStep(&w,20.3,1,0)==JHHForegroundPending);
+ assert(JHHClipboardForegroundStep(&w,20.4,1,0)==JHHForegroundReady);
+ w=(JHHForegroundWait){30,0};
+ assert(JHHClipboardForegroundStep(&w,30.1,0,0)==JHHForegroundInterrupted);
+ assert(JHHClipboardForegroundStep(&w,33.001,0,1)==JHHForegroundExpired);
+ assert(JHHClipboardForegroundStep(&w,NAN,1,0)==JHHForegroundExpired);
+ assert(JHHClipboardForegroundStep(&w,29.99,1,0)==JHHForegroundExpired);
+ return 0;}'''
+  with tempfile.TemporaryDirectory() as tmp:
+   p=Path(tmp);(p/'test.c').write_text(code)
+   subprocess.run([cc,'-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'patches'),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

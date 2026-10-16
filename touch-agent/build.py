@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent
 SOURCE_URL = 'https://codeload.github.com/appium/WebDriverAgent/zip/refs/tags/v12.0.0'
 SOURCE_SHA256 = '9c435b122b93d0f88cbf06b65eec5756d30c12d90a73b2d1c8caeef00edf540e'
-VERSION = '1.10.0'
+VERSION = '1.10.1'
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -149,9 +149,9 @@ def package(app, source, artifacts):
     test_info = plistlib.loads(test_info_file.read_bytes())
     main_id, test_id = bundle_identifiers('com.jinghaohao.touch.runner')
     info.update(CFBundleIdentifier=main_id, CFBundleDisplayName='镜好好触控', CFBundleName='JHHTouchAgent',
-                CFBundleShortVersionString=VERSION, CFBundleVersion='12', MinimumOSVersion='16.0',
+                CFBundleShortVersionString=VERSION, CFBundleVersion='13', MinimumOSVersion='16.0',
                 JHHComponent='JHH-Touch-Agent', JHHProtocolVersion=1)
-    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='12')
+    test_info.update(CFBundleIdentifier=test_id, CFBundleShortVersionString=VERSION, CFBundleVersion='13')
     for data in (info, test_info):
         data.pop('NSPhotoLibraryUsageDescription', None)
         data['NSPhotoLibraryAddUsageDescription'] = '将你在镜好好电脑端选择的图片保存到相册；不读取已有照片。'

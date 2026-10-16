@@ -8,6 +8,16 @@ static inline bool JHHClipboardFresh(double now,double when,double lifetime) {
 static inline bool JHHClipboardContext(bool sameApp,bool sameOrientation,bool keyboard,bool sameKeyboardFrame,bool sameClipboard,bool fresh) {
  return sameApp&&sameOrientation&&keyboard&&sameKeyboardFrame&&sameClipboard&&fresh;
 }
+typedef enum { JHHForegroundPending=0,JHHForegroundReady=1,JHHForegroundInterrupted=2,JHHForegroundExpired=3 } JHHForegroundResult;
+typedef struct { double started; unsigned stable; } JHHForegroundWait;
+// AX can acknowledge an activation after activate has returned. Require two
+// consecutive observations; only observe during transitions, never activate again.
+static inline JHHForegroundResult JHHClipboardForegroundStep(JHHForegroundWait *wait,double now,bool expected,bool allowedTransition) {
+ if(!wait||!JHHClipboardFresh(now,wait->started,3.0))return JHHForegroundExpired;
+ if(!expected&&!allowedTransition)return JHHForegroundInterrupted;
+ wait->stable=expected?wait->stable+1:0;
+ return wait->stable>=2?JHHForegroundReady:JHHForegroundPending;
+}
 
 typedef struct { double sx[3],sy[3],ex[3],ey[3]; } JHHClipboardPinch;
 static inline bool JHHClipboardPastePinch(double width,double height,double usableHeight,JHHClipboardPinch *out) {
