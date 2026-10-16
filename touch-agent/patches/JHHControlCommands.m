@@ -34,6 +34,10 @@ static JHHTransform JHHKeyboardCoordinates;
 static JHHGeometryCache JHHKeyboardCache;
 static pid_t JHHComposingPID;
 static BOOL JHHMayBeComposing;
+static CGPoint JHHLastTapPoint;
+static pid_t JHHLastTapPID;
+static UIInterfaceOrientation JHHLastTapOrientation;
+static double JHHLastTapTime;
 
 static JHHCacheRect JHHCacheFrame(CGRect frame)
 {
@@ -59,13 +63,15 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
     [[[FBRoute POST:@"/jhh/v1/key"] withoutSession] respondWithTarget:self action:@selector(key:)],
     [[[FBRoute POST:@"/jhh/v1/keys"] withoutSession] respondWithTarget:self action:@selector(keys:)],
     [[[FBRoute POST:@"/jhh/v1/text"] withoutSession] respondWithTarget:self action:@selector(committedText:)],
+    [[[FBRoute POST:@"/jhh/v1/clipboard/prepare"] withoutSession] respondWithTarget:self action:@selector(prepareClipboard:)],
+    [[[FBRoute POST:@"/jhh/v1/clipboard/paste"] withoutSession] respondWithTarget:self action:@selector(pasteClipboard:)],
   ];
 }
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.9.1", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"photo-upload-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.10.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"clipboard-paste-v1", @"photo-upload-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -178,6 +184,7 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   NSError *error = nil;
   if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])
     return [self rejected:@"synthesis_failed"];
+  if ([kind isEqualToString:@"tap"]) { JHHLastTapPoint=CGPointMake(from.x,from.y); JHHLastTapPID=app.processID; JHHLastTapOrientation=orientation; JHHLastTapTime=NSProcessInfo.processInfo.systemUptime; }
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"preflightMs":@(preflight),
     @"detectionMs":@(detectionMs), @"geometryMs":@(geometryMs), @"geometryCached":@(geometryCached),
     @"geometryValidationMs":@(validationMs), @"anchorResolutionMs":@(anchorMs), @"geometryCacheReason":cacheReason,
@@ -282,6 +289,8 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
     @"preflightMs":@(preflight),@"synthesisMs":@(synthesis),@"postflightMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflight-synthesis),
     @"characters":@(isText?text.length:0),@"editing":@(isEditing)});
 }
+
+#include "JHHClipboard.m"
 
 + (XCUIElement *)keyboardKey:(XCUIElement *)keyboard aliases:(NSArray<NSString *> *)aliases
 {
