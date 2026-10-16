@@ -31,7 +31,9 @@ int main(void) {
    subprocess.run([str(p/'test')],check=True)
  def test_callback_result_and_privacy(self):
   s=(ROOT/'patches/JHHControlCommands.m').read_text()
-  self.assertIn('succeeded=result;failed=error!=nil',s)
+  waiter=(ROOT/'patches/JHHEventSynthesis.m').read_text()
+  self.assertIn('complete&&succeeded&&failure==nil',waiter)
+  self.assertIn('BOOL succeeded=JHHSynthesizeEvent',s)
   self.assertIn('@"insertionVerified":@NO',s)
   self.assertIn('beforePID>0&&afterApp.processID==beforePID',s)
   helper=s[s.index('static BOOL JHHTextKeyboardVisible'):s.index('+ (XCUIElement *)keyboardKey:')]

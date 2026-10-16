@@ -25,8 +25,10 @@ int main(void) {
  }
  // Crossing eleven old five-second expirations never rebuilds anchors.
  assert(anchors==1&&validations==11);
- assert(JHHGeometryCacheInspect(&c,k,60)==JHHCachePeriodic);
- assert(!JHHGeometryCacheValidate(&c,k,frame,60));
+ assert(JHHGeometryCacheInspect(&c,k,60)==JHHCacheCheckFrame);
+ assert(JHHGeometryCacheValidate(&c,k,frame,60));
+ assert(JHHGeometryCacheInspect(&c,k,300)==JHHCachePeriodic);
+ assert(!JHHGeometryCacheValidate(&c,k,frame,300));
  assert(JHHGeometryCacheLearn(&c,k,frame,60));
  JHHGeometryKey other=k;other.pid++;
  assert(JHHGeometryCacheInspect(&c,other,61)==JHHCacheStateChanged);
@@ -50,12 +52,13 @@ int main(void) {
  JHHGeometryCache phones[2]={{0},{0}};
  assert(JHHGeometryCacheLearn(&phones[0],k,frame,0));
  assert(JHHGeometryCacheLearn(&phones[1],k,frame,30));
- assert(JHHGeometryCacheInspect(&phones[0],k,61)==JHHCachePeriodic);
- assert(JHHGeometryCacheInspect(&phones[1],k,61)==JHHCacheCheckFrame);
- // Fresh keyboard-frame validation cannot extend the hard calibration limit.
+ assert(JHHGeometryCacheInspect(&phones[0],k,301)==JHHCachePeriodic);
+ assert(JHHGeometryCacheInspect(&phones[1],k,301)==JHHCacheCheckFrame);
+ // Fresh keyboard-frame validation cannot extend the bounded five-minute calibration limit.
  assert(JHHGeometryCacheLearn(&c,k,frame,0));
  for(int i=1;i<600;i++)assert(JHHGeometryCacheValidate(&c,k,frame,i*.1));
- assert(JHHGeometryCacheInspect(&c,k,60)==JHHCachePeriodic);
+ assert(JHHGeometryCacheInspect(&c,k,60)==JHHCacheCheckFrame);
+ assert(JHHGeometryCacheInspect(&c,k,300)==JHHCachePeriodic);
  return 0;
 }'''
         with tempfile.TemporaryDirectory() as temp:
@@ -67,10 +70,10 @@ int main(void) {
     def test_frame_validation_keeps_existing_coordinate_basis(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
         self.assertIn('CGRect frame=app.frame;',source)
-        self.assertIn('JHHGeometryCacheValidate(&JHHCoordinateCache',source)
+        self.assertIn('JHHGeometryCacheValidate(&geometry->cache',source)
         self.assertIn('NSProcessInfo.processInfo.systemUptime',source)
         self.assertIn('origin.screenPoint',source)
-        self.assertIn('JHHGeometryCacheValidate(&JHHKeyboardCache',source)
+        self.assertIn('JHHGeometryCacheValidate(&geometry->cache',source)
         self.assertIn('keyboard.fb_standardSnapshot',source)
         self.assertNotIn('started-JHHCoordinateTime < 5',source)
 

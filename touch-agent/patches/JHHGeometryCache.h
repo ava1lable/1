@@ -34,12 +34,12 @@ static inline int JHHGeometryKeyEqual(JHHGeometryKey a,JHHGeometryKey b) {
     &&JHHCacheRectEqual(a.screen,b.screen)&&JHHCacheRectEqual(a.nativeScreen,b.nativeScreen);
 }
 // Monotonic seconds. Cheap state is checked on every request. A single root
-// frame is validated every five seconds; full XCTest anchors every 60 seconds.
+// frame is validated every five seconds; full XCTest anchors at a bounded five-minute safety limit.
 static inline JHHCachePlan JHHGeometryCacheInspect(const JHHGeometryCache *c,JHHGeometryKey k,double now) {
   if(!c||!c->valid)return JHHCacheCold;
   if(!JHHGeometryKeyValid(k)||!JHHGeometryKeyEqual(c->key,k))return JHHCacheStateChanged;
   if(!isfinite(now)||now<c->learnedAt||now<c->checkedAt)return JHHCacheClockChanged;
-  if(now-c->learnedAt>=60)return JHHCachePeriodic;
+  if(now-c->learnedAt>=300)return JHHCachePeriodic;
   return now-c->checkedAt>=5 ? JHHCacheCheckFrame : JHHCacheHit;
 }
 static inline int JHHGeometryCacheLearn(JHHGeometryCache *c,JHHGeometryKey k,JHHCacheRect frame,double now) {

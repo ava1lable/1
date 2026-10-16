@@ -23,7 +23,7 @@ class PackageBoundaries(unittest.TestCase):
             self.assertNotIn(forbidden,source)
     def test_replay_consumed_before_synthesis(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
-        self.assertLess(source.index('JHHLastSequence = sequence;'),source.index('[FBXCTestDaemonsProxy synthesizeEventWithRecord:'))
+        self.assertLess(source.index('JHHLastSequence = sequence;'),source.index('JHHSynthesizeEvent(event,8'))
         self.assertIn('sequence <= JHHLastSequence',source)
     def test_no_vendor_sdk_download(self):
         self.assertTrue(module.SOURCE_URL.startswith('https://codeload.github.com/appium/'))

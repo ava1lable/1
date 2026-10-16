@@ -29,8 +29,8 @@ int main(void) {
         for forbidden in ('typeText:', 'setValue:', 'textFields', 'textViews', 'UIPasteboard'):
             self.assertNotIn(forbidden,key)
         self.assertIn('app.keyboards.firstMatch',key)
-        self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('[layoutKey tap]'))
-        self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('[key tap]'))
+        self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('tapSnapshotNode:layoutKey'))
+        self.assertLess(key.index('JHHLastSequence = sequence;'),key.index('tapSnapshotNode:key'))
 
     def test_fast_batch_uses_single_snapshot_and_raw_event(self):
         source=(ROOT/'patches/JHHControlCommands.m').read_text(encoding='utf-8')
@@ -41,5 +41,5 @@ int main(void) {
         self.assertNotIn('.hittable',fast)
         self.assertIn('keys.count > 8',fast)
         self.assertIn('keys.count > 1 && (usage < 4 || usage > 29 || modifiers != 0)',fast)
-        self.assertLess(fast.index('JHHLastSequence = sequence;'),fast.index('[FBXCTestDaemonsProxy synthesizeEventWithRecord:'))
-        self.assertIn('JHHGeometryCacheValidate(&JHHKeyboardCache',fast)
+        self.assertLess(fast.index('JHHLastSequence = sequence;'),fast.index('JHHSynthesizeEvent(event'))
+        self.assertIn('JHHGeometryCacheValidate(&geometry->cache',fast)

@@ -17,6 +17,7 @@
 #include "JHHCoordinateTransform.h"
 #include "JHHKeyboardMap.h"
 #include "JHHGeometryCache.h"
+#include "JHHGeometryBank.h"
 #include "JHHKeyboardCandidates.h"
 #include "JHHCommittedText.h"
 #include "JHHTextReceipt.h"
@@ -25,14 +26,20 @@
 #import "XCTRunnerDaemonSession.h"
 #import "FBRunLoopSpinner.h"
 #import <CommonCrypto/CommonDigest.h>
+#include "JHHEventSynthesis.m"
+
+static BOOL JHHSynthesizeEvent(XCSynthesizedEventRecord *event,double timeout,NSDictionary **metrics,NSError **error) {
+ return JHHWaitForEvent(^(void (^done)(BOOL,NSError *)) {
+  [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:event completion:(id)^(BOOL success,NSError *failure) {done(success,failure);}];
+ },timeout,metrics,error);
+}
+
 
 @implementation JHHControlCommands
 static NSString *JHHInstance;
 static unsigned long long JHHLastSequence;
-static JHHTransform JHHCoordinates;
-static JHHGeometryCache JHHCoordinateCache;
-static JHHTransform JHHKeyboardCoordinates;
-static JHHGeometryCache JHHKeyboardCache;
+static JHHGeometryBank JHHCoordinateBank;
+static JHHGeometryBank JHHKeyboardBank;
 static pid_t JHHComposingPID;
 static BOOL JHHMayBeComposing;
 static CGPoint JHHLastTapPoint;
@@ -71,8 +78,8 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
 
 + (id<FBResponsePayload>)status:(FBRouteRequest *)request
 {
-  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.10.2", @"protocol":@1,
-    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"clipboard-paste-v1", @"clipboard-foreground-settle-v1", @"clipboard-standard-writer-v1", @"clipboard-system-menu-v1", @"photo-upload-v1"]});
+  return FBResponseWithObject(@{@"component":@"JHH-Touch-Agent", @"version":@"1.11.0", @"protocol":@1,
+    @"instance":JHHInstance, @"ready":@YES, @"coordinateSpace":@"xctest-anchors-v1", @"features":@[@"tap", @"swipe", @"native-keyboard-v1", @"native-keyboard-batch-v1", @"geometry-cache-v1", @"low-latency-completion-v1", @"keyboard-snapshot-layout-v1", @"native-candidate-numbers-v1", @"keyboard-standard-snapshot-v1", @"committed-text-v1", @"text-receipt-v1", @"clipboard-paste-v1", @"clipboard-foreground-settle-v1", @"clipboard-standard-writer-v1", @"clipboard-system-menu-v1", @"photo-upload-v1"]});
 }
 
 + (id<FBResponsePayload>)rejected:(NSString *)code
@@ -123,39 +130,42 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   // origin/scale. Cache only geometry, never an element or an input target.
   double cacheNow=NSProcessInfo.processInfo.systemUptime;
   JHHGeometryKey geometryKey=JHHCurrentGeometryKey(app,orientation);
-  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&JHHCoordinateCache,geometryKey,cacheNow);
+  int returned=0;JHHGeometryEntry *geometry=JHHGeometryBankSelect(&JHHCoordinateBank,geometryKey,cacheNow,&returned);
+  if(!geometry)return [self rejected:@"geometry_unavailable"];
+  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&geometry->cache,geometryKey,cacheNow);
+  if(returned&&cachePlan==JHHCacheHit)cachePlan=JHHCacheCheckFrame;
   NSString *cacheReason=[NSString stringWithUTF8String:JHHGeometryCacheReason(cachePlan)];
   BOOL geometryCached=cachePlan==JHHCacheHit;
   double validationMs=0,anchorMs=0;
   if(cachePlan==JHHCacheCheckFrame) {
     CFAbsoluteTime validationStarted=CFAbsoluteTimeGetCurrent();
     CGRect frame=app.frame;
-    geometryCached=JHHGeometryCacheValidate(&JHHCoordinateCache,geometryKey,JHHCacheFrame(frame),
+    geometryCached=JHHGeometryCacheValidate(&geometry->cache,geometryKey,JHHCacheFrame(frame),
       NSProcessInfo.processInfo.systemUptime);
     validationMs=(CFAbsoluteTimeGetCurrent()-validationStarted)*1000;
     if(!geometryCached)cacheReason=@"frame_changed";
   }
   if(!geometryCached) {
-    JHHCoordinateCache.valid=0;
+    geometry->cache.valid=0;
     CFAbsoluteTime anchorStarted=CFAbsoluteTimeGetCurrent();
     XCUICoordinate *origin = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
     CGPoint p0 = origin.screenPoint;
     CGPoint px = [app coordinateWithNormalizedOffset:CGVectorMake(0.5, 0)].screenPoint;
     CGPoint py = [app coordinateWithNormalizedOffset:CGVectorMake(0, 0.5)].screenPoint;
     if (!JHHTransformCreate((JHHPoint){p0.x,p0.y}, (JHHPoint){px.x,px.y},
-                            (JHHPoint){py.x,py.y}, &JHHCoordinates))
+                            (JHHPoint){py.x,py.y}, &geometry->transform))
       return [self rejected:@"geometry_unavailable"];
     // The just-resolved anchor snapshot supplies the validation baseline;
     // reading its frame does not issue another remote XCTest request.
     id<FBXCElementSnapshot> root=app.fb_cachedSnapshot;
     CGRect frame=root ? root.frame : app.frame;
-    if(!JHHGeometryCacheLearn(&JHHCoordinateCache,geometryKey,JHHCacheFrame(frame),
+    if(!JHHGeometryCacheLearn(&geometry->cache,geometryKey,JHHCacheFrame(frame),
         NSProcessInfo.processInfo.systemUptime))return [self rejected:@"geometry_unavailable"];
     anchorMs=(CFAbsoluteTimeGetCurrent()-anchorStarted)*1000;
   }
   JHHPoint fromPoint, toPoint;
-  if (!JHHTransformMap(JHHCoordinates, [a[@"x"] doubleValue], [a[@"y"] doubleValue], &fromPoint)
-      || !JHHTransformMap(JHHCoordinates, [a[@"toX"] doubleValue], [a[@"toY"] doubleValue], &toPoint))
+  if (!JHHTransformMap(geometry->transform, [a[@"x"] doubleValue], [a[@"y"] doubleValue], &fromPoint)
+      || !JHHTransformMap(geometry->transform, [a[@"toX"] doubleValue], [a[@"toY"] doubleValue], &toPoint))
     return [self rejected:@"invalid_coordinate"];
   CGPoint from = CGPointMake(fromPoint.x,fromPoint.y), to = CGPointMake(toPoint.x,toPoint.y);
   double geometryMs = (CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs;
@@ -182,14 +192,14 @@ static JHHGeometryKey JHHCurrentGeometryKey(XCUIApplication *app,UIInterfaceOrie
   // Consume before synthesis. An exception/USB timeout must never cause replay.
   JHHLastSequence = sequence;
   JHHMayBeComposing=NO; // A screen gesture changes the editing/candidate context.
-  NSError *error = nil;
-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error])
+  NSError *error = nil;NSDictionary *completionMetrics=nil;
+  if (!JHHSynthesizeEvent(event,8,&completionMetrics,&error))
     return [self rejected:@"synthesis_failed"];
   if ([kind isEqualToString:@"tap"]) { JHHLastTapPoint=CGPointMake(from.x,from.y); JHHLastTapPID=app.processID; JHHLastTapOrientation=orientation; JHHLastTapTime=NSProcessInfo.processInfo.systemUptime; }
   return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"preflightMs":@(preflight),
     @"detectionMs":@(detectionMs), @"geometryMs":@(geometryMs), @"geometryCached":@(geometryCached),
     @"geometryValidationMs":@(validationMs), @"anchorResolutionMs":@(anchorMs), @"geometryCacheReason":cacheReason,
-    @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"engine":@"xctest-anchors-v1",
+    @"eventBuildMs":@(preflight - detectionMs - geometryMs), @"callbackMs":completionMetrics[@"callbackMs"], @"completionWaitMs":completionMetrics[@"completionWaitMs"], @"engine":@"xctest-anchors-v1",
     @"synthesisMs":@((CFAbsoluteTimeGetCurrent() - started) * 1000 - preflight)});
 }
 // Read only focus flags and geometry; never read/log labels, values or text.
@@ -215,15 +225,9 @@ static NSString *JHHTextAppToken(XCUIApplication *app) {
  unsigned char digest[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,(CC_LONG)data.length,digest);
  return [NSString stringWithFormat:@"app#%02x%02x%02x%02x%02x",digest[0],digest[1],digest[2],digest[3],digest[4]];
 }
-static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *hadError) {
- __block BOOL succeeded=NO;__block BOOL failed=NO;
- [FBRunLoopSpinner spinUntilCompletion:^(void(^completion)(void)) {
-  [[XCUIDevice.sharedDevice eventSynthesizer] synthesizeEvent:event completion:(id)^(BOOL result,NSError *error) {
-   succeeded=result;failed=error!=nil;completion();
-  }];
- }];
- if(hadError)*hadError=failed;
- return succeeded;
+static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,double timeout,BOOL *hadError,NSDictionary **metrics) {
+ NSError *error=nil;BOOL succeeded=JHHSynthesizeEvent(event,timeout,metrics,&error);
+ if(hadError)*hadError=error!=nil;return succeeded;
 }
 // Same redacted event mechanism, now with explicit execution and context receipts.
 + (id<FBResponsePayload>)committedText:(FBRouteRequest *)request
@@ -260,7 +264,7 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   UIInterfaceOrientation orientation=app.interfaceOrientation;
   if(orientation==UIInterfaceOrientationUnknown)return [self rejected:@"orientation_unavailable"];
   pid_t beforePID=app.processID;
-  BOOL keyboardBefore=JHHTextKeyboardVisible(app),focusBefore=JHHTextFocusObserved(app);
+  BOOL keyboardBefore=JHHTextKeyboardVisible(app),focusBefore=keyboardBefore?NO:JHHTextFocusObserved(app);
   NSString *appToken=JHHTextAppToken(app);
   if(!JHHTextCanDispatch(keyboardBefore,focusBefore))
     return FBResponseWithObject(@{@"accepted":@NO,@"code":@"keyboard_not_visible",@"sequence":@(sequence),
@@ -275,16 +279,18 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   [event addPointerEventPath:path];
   JHHLastSequence=sequence;JHHMayBeComposing=NO;
   BOOL hadError=NO;
-  BOOL eventSucceeded=JHHSynthesizeCommittedText(event,&hadError);
+  NSDictionary *completionMetrics=nil;
+  BOOL eventSucceeded=JHHSynthesizeCommittedText(event,8+(isText?text.length/60.0:0),&hadError,&completionMetrics);
   double synthesis=(CFAbsoluteTimeGetCurrent()-started)*1000-preflight;
   XCUIApplication *afterApp=XCUIApplication.fb_activeApplication;afterApp.fb_shouldWaitForQuiescence=NO;
   BOOL sameApp=beforePID>0&&afterApp.processID==beforePID;
-  BOOL keyboardAfter=JHHTextKeyboardVisible(afterApp),focusAfter=JHHTextFocusObserved(afterApp);
+  BOOL keyboardAfter=JHHTextKeyboardVisible(afterApp),focusAfter=keyboardAfter?NO:JHHTextFocusObserved(afterApp);
   JHHTextOutcome outcome=JHHTextClassify(eventSucceeded,hadError,sameApp,keyboardAfter,focusAfter,isEditing);
   NSString *code=outcome==JHHTextEventFailed?@"text_event_failed":outcome==JHHTextAppChanged?@"text_app_changed":
     outcome==JHHTextContextLost?@"text_context_lost":@"event_dispatched_unverified";
   return FBResponseWithObject(@{@"accepted":JHHTextAcceptedValue(outcome),@"code":code,@"sequence":@(sequence),@"engine":@"committed-text-v1",
-    @"receiptVersion":@1,@"executionAttempted":@YES,@"eventSucceeded":@(eventSucceeded),@"hadError":@(hadError),
+    @"receiptVersion":@1,@"executionAttempted":@YES,@"callbackMs":completionMetrics[@"callbackMs"],@"completionWaitMs":completionMetrics[@"completionWaitMs"],
+    @"focusBeforeQueried":keyboardBefore?@NO:@YES,@"focusAfterQueried":keyboardAfter?@NO:@YES,@"eventSucceeded":@(eventSucceeded),@"hadError":@(hadError),
     @"sameApp":@(sameApp),@"appToken":appToken,@"keyboardBefore":@(keyboardBefore),@"focusBefore":@(focusBefore),
     @"keyboardAfter":@(keyboardAfter),@"focusAfter":@(focusAfter),@"insertionVerified":@NO,
     @"preflightMs":@(preflight),@"synthesisMs":@(synthesis),@"postflightMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflight-synthesis),
@@ -334,57 +340,70 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   return aliases;
 }
 
-+ (id<FBResponsePayload>)keyArguments:(NSDictionary *)a
+// Slow layout changes reuse the already obtained keyboard snapshot. There is
+// no remote exists/hittable/frame search for every alias and no duplicate
+// snapshot before the first layout action. Every layout action is acknowledged
+// once; its new keyboard is freshly snapped before the actual requested key.
++ (BOOL)tapSnapshotNode:(id<FBXCElementSnapshot>)node keyboard:(XCUIElement *)keyboard
+ snapshot:(id<FBXCElementSnapshot>)snapshot app:(XCUIApplication *)app orientation:(UIInterfaceOrientation)orientation
+ metrics:(NSDictionary **)metrics
 {
-  if (![a[@"instance"] isKindOfClass:NSString.class] || ![a[@"instance"] isEqual:JHHInstance])
-    return [self rejected:@"agent_restarted"];
-  if (![self number:a[@"sequence"] min:1 max:9007199254740991.0] ||
-      floor([a[@"sequence"] doubleValue]) != [a[@"sequence"] doubleValue])
-    return [self rejected:@"invalid_sequence"];
-  unsigned long long sequence = [a[@"sequence"] unsignedLongLongValue];
-  if (sequence <= JHHLastSequence) return [self rejected:@"duplicate_or_stale"];
-  if (![self number:a[@"usage"] min:4 max:99] || floor([a[@"usage"] doubleValue]) != [a[@"usage"] doubleValue] ||
-      ![self number:a[@"modifiers"] min:0 max:255] || floor([a[@"modifiers"] doubleValue]) != [a[@"modifiers"] doubleValue])
-    return [self rejected:@"invalid_key"];
-  unsigned usage = [a[@"usage"] unsignedIntValue], modifiers = [a[@"modifiers"] unsignedIntValue];
-  // Shift is interpreted as a requested on-screen key, never as a held HID key.
-  if (modifiers & ~0x22U) return [self rejected:@"unsupported_modifiers"];
-  int character = JHHKeyboardCharacter(usage, (modifiers & 0x22U) != 0);
-  NSArray<NSString *> *aliases = [self keyAliases:usage modifiers:modifiers];
-  if (aliases == nil) return [self rejected:@"unsupported_key"];
-
-  CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
-  XCUIApplication *app = XCUIApplication.fb_activeApplication;
-  app.fb_shouldWaitForQuiescence = NO;
-  XCUIElement *keyboard = app.keyboards.firstMatch;
-  if (!keyboard.exists) return [self rejected:@"keyboard_not_visible"];
-  XCUIElement *key = [self keyboardKey:keyboard aliases:aliases];
-  // Consume BEFORE any keyboard-layout tap. An uncertain response is never replayed.
-  JHHLastSequence = sequence;
-  if (key == nil && character && character != ' ') {
-    NSArray<NSArray<NSString *> *> *switchGroups = usage >= 4 && usage <= 29
-      ? @[@[@"ABC", @"letters", @"字母", @"拼音"], @[@"shift", @"Shift", @"大写"]]
-      : @[@[@"123", @"numbers", @"Number", @"数字"], @[@"#+=", @"symbols", @"符号"]];
-    for (NSArray<NSString *> *switches in switchGroups) {
-      if (key != nil) break;
-      // Do not change case for ordinary letters: respect the phone keyboard.
-      if (usage >= 4 && usage <= 29 && modifiers == 0 && [switches containsObject:@"shift"]) break;
-      XCUIElement *layoutKey = [self keyboardKey:keyboard aliases:switches];
-      if (layoutKey == nil) continue;
-      [layoutKey tap];
-      keyboard = app.keyboards.firstMatch;
-      key = [self keyboardKey:keyboard aliases:aliases];
-    }
+ CGRect frame=snapshot.frame;
+ if(CGRectIsEmpty(frame)||!CGRectContainsPoint(frame,CGPointMake(CGRectGetMidX(node.frame),CGRectGetMidY(node.frame))))return NO;
+ JHHGeometryKey key=JHHCurrentGeometryKey(app,orientation);double now=NSProcessInfo.processInfo.systemUptime;
+ JHHGeometryEntry *g=JHHGeometryBankSelect(&JHHKeyboardBank,key,now,NULL);if(!g)return NO;
+ if(!JHHGeometryCacheValidate(&g->cache,key,JHHCacheFrame(frame),now)) {
+  CGPoint p0=[keyboard coordinateWithNormalizedOffset:CGVectorMake(0,0)].screenPoint;
+  CGPoint px=[keyboard coordinateWithNormalizedOffset:CGVectorMake(.5,0)].screenPoint;
+  CGPoint py=[keyboard coordinateWithNormalizedOffset:CGVectorMake(0,.5)].screenPoint;
+  if(!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&g->transform)||
+    !JHHGeometryCacheLearn(&g->cache,key,JHHCacheFrame(frame),NSProcessInfo.processInfo.systemUptime))return NO;
+ }
+ JHHPoint point;
+ if(!JHHTransformMap(g->transform,(CGRectGetMidX(node.frame)-frame.origin.x)/frame.size.width,
+      (CGRectGetMidY(node.frame)-frame.origin.y)/frame.size.height,&point))return NO;
+ XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(point.x,point.y) offset:0];
+ [path liftUpAtOffset:.035];XCSynthesizedEventRecord *event=[[XCSynthesizedEventRecord alloc] initWithName:@"JHH Keyboard Layout" interfaceOrientation:orientation];
+ [event addPointerEventPath:path];NSError *error=nil;return JHHSynthesizeEvent(event,8,metrics,&error);
+}
++ (id<FBResponsePayload>)keyArguments:(NSDictionary *)a app:(XCUIApplication *)app keyboard:(XCUIElement *)keyboard
+ snapshot:(id<FBXCElementSnapshot>)snapshot orientation:(UIInterfaceOrientation)orientation started:(CFAbsoluteTime)started
+{
+ unsigned usage=[a[@"usage"] unsignedIntValue],modifiers=[a[@"modifiers"] unsignedIntValue];
+ unsigned long long sequence=[a[@"sequence"] unsignedLongLongValue];pid_t pid=app.processID;
+ NSArray *aliases=[self keyAliases:usage modifiers:modifiers];
+ int character=JHHKeyboardCharacter(usage,(modifiers&0x22U)!=0);
+ id<FBXCElementSnapshot> key=[self snapshotKey:snapshot aliases:aliases];NSDictionary *timing=nil;
+ double layoutMs=0;
+ // This single-key fallback was validated by keysArguments; consume before
+ // any layout tap so uncertain results cannot be replayed.
+ JHHLastSequence = sequence;
+ if(!key&&character&&character!=' ') {
+  NSArray *groups=usage>=4&&usage<=29 ?
+    @[@[@"ABC",@"letters",@"字母",@"拼音"],@[@"shift",@"Shift",@"大写"]] :
+    @[@[@"123",@"numbers",@"Number",@"数字"],@[@"#+=",@"symbols",@"符号"]];
+  for(NSArray *switches in groups) {
+   if(key)break;
+   if(usage>=4&&usage<=29&&modifiers==0&&[switches containsObject:@"shift"])break;
+   id<FBXCElementSnapshot> layoutKey=[self snapshotKey:snapshot aliases:switches];if(!layoutKey)continue;
+   CFAbsoluteTime before=CFAbsoluteTimeGetCurrent();
+   if(![self tapSnapshotNode:layoutKey keyboard:keyboard snapshot:snapshot app:app orientation:orientation metrics:&timing])return [self rejected:@"synthesis_failed"];
+   layoutMs+=(CFAbsoluteTimeGetCurrent()-before)*1000;
+   XCUIApplication *current=XCUIApplication.fb_activeApplication;
+   if(current.processID!=pid||current.interfaceOrientation!=orientation)return [self rejected:@"agent_context_changed"];
+   keyboard=app.keyboards.firstMatch;
+   @try {snapshot=keyboard.fb_standardSnapshot;} @catch(NSException *exception){return [self rejected:@"keyboard_not_visible"];}
+   if(CGRectIsEmpty(snapshot.frame)||snapshot.children.count==0)return [self rejected:@"keyboard_not_visible"];
+   key=[self snapshotKey:snapshot aliases:aliases];
   }
-  if (key == nil) return [self rejected:@"key_unavailable"];
-  double detectionMs = (CFAbsoluteTimeGetCurrent()-started)*1000;
-  // Tap only a key inside the active system keyboard. No input-field search,
-  // setValue, typeText, clipboard injection or implicit return/submit.
-  [key tap];
-  JHHComposingPID=app.processID;
-  if(usage>=4&&usage<=29)JHHMayBeComposing=YES;else if(usage!=42)JHHMayBeComposing=NO;
-  return FBResponseWithObject(@{@"accepted":@YES, @"sequence":@(sequence), @"engine":@"native-keyboard-v1",
-    @"detectionMs":@(detectionMs), @"executionMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs)});
+ }
+ if(!key)return [self rejected:@"key_unavailable"];
+ double detectionMs=(CFAbsoluteTimeGetCurrent()-started)*1000;
+ if(![self tapSnapshotNode:key keyboard:keyboard snapshot:snapshot app:app orientation:orientation metrics:&timing])return [self rejected:@"synthesis_failed"];
+ JHHComposingPID=pid;if(usage>=4&&usage<=29)JHHMayBeComposing=YES;else if(usage!=42)JHHMayBeComposing=NO;
+ return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"engine":@"native-keyboard-v1",
+   @"detectionMs":@(detectionMs),@"layoutMs":@(layoutMs),@"callbackMs":timing[@"callbackMs"],@"completionWaitMs":timing[@"completionWaitMs"],
+   @"executionMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-detectionMs)});
 }
 
 + (id<FBXCElementSnapshot>)snapshotKey:(id<FBXCElementSnapshot>)keyboard aliases:(NSArray<NSString *> *)aliases
@@ -510,7 +529,7 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
         // event was submitted. Never retry an uncertain synthesized key batch.
         NSMutableDictionary *single = [a mutableCopy];
         [single addEntriesFromDictionary:keys.firstObject];
-        return [self keyArguments:single];
+        return [self keyArguments:single app:app keyboard:keyboard snapshot:snapshot orientation:orientation started:started];
       }
       return [self rejected:@"key_unavailable"];
     }
@@ -519,23 +538,25 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   double snapshotMs = (CFAbsoluteTimeGetCurrent()-started)*1000;
   JHHGeometryKey geometryKey=JHHCurrentGeometryKey(app,orientation);
   double cacheNow=NSProcessInfo.processInfo.systemUptime;
-  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&JHHKeyboardCache,geometryKey,cacheNow);
+  JHHGeometryEntry *geometry=JHHGeometryBankSelect(&JHHKeyboardBank,geometryKey,cacheNow,NULL);
+  if(!geometry)return [self rejected:@"geometry_unavailable"];
+  JHHCachePlan cachePlan=JHHGeometryCacheInspect(&geometry->cache,geometryKey,cacheNow);
   // This batch already has a fresh keyboard snapshot. Validate its frame every
   // time; never cache key targets or the candidate/layout snapshot.
   BOOL geometryCached=(cachePlan==JHHCacheHit||cachePlan==JHHCacheCheckFrame)
-    && JHHGeometryCacheValidate(&JHHKeyboardCache,geometryKey,JHHCacheFrame(frame),cacheNow);
+    && JHHGeometryCacheValidate(&geometry->cache,geometryKey,JHHCacheFrame(frame),cacheNow);
   NSString *cacheReason=[NSString stringWithUTF8String:JHHGeometryCacheReason(cachePlan)];
   if(!geometryCached && (cachePlan==JHHCacheHit||cachePlan==JHHCacheCheckFrame))cacheReason=@"frame_changed";
   double anchorMs=0;
   if(!geometryCached) {
-    JHHKeyboardCache.valid=0;
+    geometry->cache.valid=0;
     CFAbsoluteTime anchorStarted=CFAbsoluteTimeGetCurrent();
     CGPoint p0 = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0,0)].screenPoint;
     CGPoint px = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0.5,0)].screenPoint;
     CGPoint py = [keyboard coordinateWithNormalizedOffset:CGVectorMake(0,0.5)].screenPoint;
-    if (!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&JHHKeyboardCoordinates))
+    if (!JHHTransformCreate((JHHPoint){p0.x,p0.y},(JHHPoint){px.x,px.y},(JHHPoint){py.x,py.y},&geometry->transform))
       return [self rejected:@"geometry_unavailable"];
-    if(!JHHGeometryCacheLearn(&JHHKeyboardCache,geometryKey,JHHCacheFrame(frame),
+    if(!JHHGeometryCacheLearn(&geometry->cache,geometryKey,JHHCacheFrame(frame),
         NSProcessInfo.processInfo.systemUptime))return [self rejected:@"geometry_unavailable"];
     anchorMs=(CFAbsoluteTimeGetCurrent()-anchorStarted)*1000;
   }
@@ -546,7 +567,7 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
     double x=(CGRectGetMidX(node.frame)-frame.origin.x)/frame.size.width;
     double y=(CGRectGetMidY(node.frame)-frame.origin.y)/frame.size.height;
     JHHPoint point;
-    if (!JHHTransformMap(JHHKeyboardCoordinates,x,y,&point)) return [self rejected:@"geometry_unavailable"];
+    if (!JHHTransformMap(geometry->transform,x,y,&point)) return [self rejected:@"geometry_unavailable"];
     // Sequential complete taps, matching upstream W3C's separate pointer paths.
     double offset=index++*0.045;
     XCPointerEventPath *path=[[XCPointerEventPath alloc] initForTouchAtPoint:CGPointMake(point.x,point.y) offset:offset];
@@ -555,15 +576,15 @@ static BOOL JHHSynthesizeCommittedText(XCSynthesizedEventRecord *event,BOOL *had
   }
   double preflightMs=(CFAbsoluteTimeGetCurrent()-started)*1000;
   JHHLastSequence = sequence;
-  NSError *error=nil;
-  if (![FBXCTestDaemonsProxy synthesizeEventWithRecord:event error:&error]) { JHHMayBeComposing=NO; return [self rejected:@"synthesis_failed"]; }
+  NSError *error=nil;NSDictionary *completionMetrics=nil;
+  if (!JHHSynthesizeEvent(event,8,&completionMetrics,&error)) { JHHMayBeComposing=NO; return [self rejected:@"synthesis_failed"]; }
   unsigned lastUsage=[keys.lastObject[@"usage"] unsignedIntValue];
   if(selectingCandidate)JHHMayBeComposing=NO;
   else if(lastUsage>=4&&lastUsage<=29)JHHMayBeComposing=YES;
   else if(lastUsage!=42)JHHMayBeComposing=NO;
   return FBResponseWithObject(@{@"accepted":@YES,@"sequence":@(sequence),@"keyCount":@(keys.count),
     @"keyAction":selectingCandidate ? @"candidate" : @"key",@"candidateIndex":@(selectingCandidate?candidateIndex:0),
-    @"snapshotEngine":@"standard",@"keyIntervalMs":@45,
+    @"snapshotEngine":@"standard",@"keyIntervalMs":@45,@"callbackMs":completionMetrics[@"callbackMs"],@"completionWaitMs":completionMetrics[@"completionWaitMs"],
     @"engine":@"native-keyboard-batch-v1",@"snapshotMs":@(snapshotMs),@"geometryCached":@(geometryCached),
     @"anchorResolutionMs":@(anchorMs),@"geometryCacheReason":cacheReason,
     @"geometryMs":@(preflightMs-snapshotMs),@"synthesisMs":@((CFAbsoluteTimeGetCurrent()-started)*1000-preflightMs)});
