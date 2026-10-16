@@ -78,6 +78,9 @@ static id<FBResponsePayload> JHHClipboardPrepareFailure(NSString *code,unsigned 
    // NSString supplies standard text representations through NSItemProviderWriting.
    // Keep Handoff disabled; allow ten minutes for deliberate manual verification.
    [pb setObjects:@[text] localOnly:YES expirationDate:[NSDate dateWithTimeIntervalSinceNow:600]];
+   double publishUntil=NSProcessInfo.processInfo.systemUptime+1.0;
+   while(pb.changeCount==before&&UIApplication.sharedApplication.applicationState==UIApplicationStateActive&&NSProcessInfo.processInfo.systemUptime<publishUntil)
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.08]];
    NSInteger publishedChange=pb.changeCount;
    change=publishedChange;
    double until=NSProcessInfo.processInfo.systemUptime+1.5;unsigned stable=0;
