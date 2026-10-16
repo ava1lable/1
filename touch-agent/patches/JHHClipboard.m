@@ -69,9 +69,16 @@ static id<FBResponsePayload> JHHClipboardReply(BOOL accepted,NSString *code,unsi
  if(!prepared||![a[@"ticket"] isKindOfClass:NSString.class]||![a[@"ticket"] isEqual:prepared[@"ticket"]])
   return JHHClipboardReply(NO,@"clipboard_ticket_invalid",sequence,NO,NO);
  XCUIApplication *app=XCUIApplication.fb_activeApplication;app.fb_shouldWaitForQuiescence=NO;
- CGRect keyboard=JHHClipboardKeyboardFrame(app),old=[prepared[@"keyboard"] CGRectValue];
- BOOL frameSame=!CGRectIsEmpty(keyboard)&&fabs(keyboard.origin.x-old.origin.x)<4&&fabs(keyboard.origin.y-old.origin.y)<4&&
-  fabs(keyboard.size.width-old.size.width)<4&&fabs(keyboard.size.height-old.size.height)<4;
+ CGRect keyboard=CGRectZero,old=[prepared[@"keyboard"] CGRectValue];BOOL frameSame=NO;
+ double keyboardUntil=NSProcessInfo.processInfo.systemUptime+1.2;
+ do {
+  if(XCUIApplication.fb_activeApplication.processID!=[prepared[@"pid"] intValue])break;
+  keyboard=JHHClipboardKeyboardFrame(app);
+  frameSame=!CGRectIsEmpty(keyboard)&&fabs(keyboard.origin.x-old.origin.x)<4&&fabs(keyboard.origin.y-old.origin.y)<4&&
+   fabs(keyboard.size.width-old.size.width)<4&&fabs(keyboard.size.height-old.size.height)<4;
+  if(frameSame)break;
+  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+ }while(NSProcessInfo.processInfo.systemUptime<keyboardUntil);
  BOOL clipboardSame=UIPasteboard.generalPasteboard.changeCount==[prepared[@"change"] integerValue];
  if(!JHHClipboardContext(app.processID==[prepared[@"pid"] intValue],app.interfaceOrientation==[prepared[@"orientation"] integerValue],
     !CGRectIsEmpty(keyboard),frameSame,clipboardSame,JHHClipboardFresh(NSProcessInfo.processInfo.systemUptime,[prepared[@"created"] doubleValue],20)))
@@ -106,3 +113,4 @@ static id<FBResponsePayload> JHHClipboardReply(BOOL accepted,NSString *code,unsi
  JHHMayBeComposing=NO;
  return JHHClipboardReply(YES,@"paste_invoked_unverified",sequence,YES,YES);
 }
+
