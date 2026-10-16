@@ -210,7 +210,9 @@ def build(source, output):
     log = output / 'xcode-build.log'
     with log.open('w',encoding='utf-8') as f: result = subprocess.run(command,cwd=source,stdout=f,stderr=subprocess.STDOUT)
     if result.returncode:
-        print('\n'.join(log.read_text(encoding='utf-8',errors='replace').splitlines()[-80:]))
+        lines=log.read_text(encoding='utf-8',errors='replace').splitlines()
+        print('\n'.join(line for i,line in enumerate(lines) if 'error:' in line or (i and 'error:' in lines[i-1])))
+        print('\n'.join(lines[-80:]))
         raise RuntimeError('Xcode compilation failed')
     apps = list((derived/'Build/Products/Release-iphoneos').glob('WebDriverAgentRunner-Runner.app'))
     if len(apps)!=1: raise RuntimeError('Expected compiled runner app')
@@ -225,3 +227,4 @@ if __name__ == '__main__':
     else:
         result=build(source,output)
         print(json.dumps({k:v for k,v in result.items() if k!='files'},ensure_ascii=False))
+
