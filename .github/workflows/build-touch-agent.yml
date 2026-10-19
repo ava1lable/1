@@ -15,6 +15,22 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Materialize verified diagnostic source snapshot
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import io,runpy,zipfile
+          entry=Path('touch-agent/build.py').resolve()
+          snapshot=runpy.run_path(str(entry))
+          root=entry.parent
+          with zipfile.ZipFile(io.BytesIO(snapshot['_data'])) as bundle:
+              for info in bundle.infolist():
+                  target=(root/info.filename).resolve()
+                  if not target.is_relative_to(root) or info.is_dir() or info.file_size>1000000:
+                      raise RuntimeError('Invalid source snapshot path')
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(bundle.read(info))
+          PY
       - name: Check packaging boundaries
         run: python3 -m unittest discover -s touch-agent/tests -v
       - name: Build unsigned iOS 16 touch agent
